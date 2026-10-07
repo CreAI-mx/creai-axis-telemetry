@@ -1,0 +1,12 @@
+# Dashboard runtime config (Supabase URL + anon key) is per deployment
+dashboard/config.js
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
+.env
+.env.*
+
+__pycache__/
+*.pyc
+.DS_Store

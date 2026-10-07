@@ -1,0 +1,15 @@
+{
+  "name": "creai-axis-telemetry",
+  "description": "Opt-in usage telemetry for creai-axis. Installs a session hook that, once a developer opts in, sends one metadata-only event per creai-axis skill used to the team's adoption dashboard.",
+  "owner": {
+    "name": "Creai",
+    "url": "https://creai.mx"
+  },
+  "plugins": [
+    {
+      "name": "creai-telemetry",
+      "source": "./plugins/creai-telemetry",
+      "description": "creai-axis usage collector (inert until opt-in) and the /creai-telemetry:creai-usage skill to opt in, backfill, check status or opt out."
+    }
+  ]
+}

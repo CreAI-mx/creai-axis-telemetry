@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adopción de creai-axis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  /* Layout: summary row of four tiles, then trend + funnel side by side, then skills + heatmap, then the dev table.
+     CreAI design system (blues 50-800, brand 600, Inter 400/600) — same tokens as creai-arch/assets/dashboard-template.html.
+     Every chart is one hue: the DS has no second hue that passes CVD/contrast checks in dark mode. */
+  :root{
+    --blue-50:#E6F3FF; --blue-100:#BADBFF; --blue-200:#91C3FF; --blue-300:#69A7FF;
+    --blue-400:#3D84F5; --blue-500:#155EE8; --blue-600:#0843C2; --blue-700:#002C9C; --blue-800:#001D75;
+    --brand:var(--blue-600);
+    --text-primary:#000000; --text-secondary:rgba(0,0,0,.55);
+    --page:#FFFFFF; --surface:var(--blue-50); --line:var(--blue-100); --line-strong:var(--blue-200);
+    --chip-ink:var(--blue-800); --grid:rgba(8,67,194,.12); --track:rgba(8,67,194,.08);
+    --mark:var(--blue-600);
+    --heat-1:#69A7FF; --heat-2:#3D84F5; --heat-3:#155EE8; --heat-4:#0843C2; --heat-5:#002C9C; --heat-ink-dark:#FFFFFF; --heat-ink-light:#001D75;
+    --status-ok:#0F7B34; --status-partial:#B45309; --ok-wash:rgba(15,123,52,.10); --partial-wash:rgba(180,83,9,.12);
+    --tooltip-bg:#001D75; --tooltip-ink:#FFFFFF;
+    --font-sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    --radius:12px; --radius-sm:8px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --text-primary:#FFFFFF; --text-secondary:rgba(255,255,255,.6);
+      --page:#001344; --surface:var(--blue-800); --line:var(--blue-700); --line-strong:var(--blue-600);
+      --brand:var(--blue-400); --chip-ink:var(--blue-100); --grid:rgba(186,219,255,.14); --track:rgba(186,219,255,.08);
+      --mark:var(--blue-400);
+      --heat-1:#155EE8; --heat-2:#3D84F5; --heat-3:#69A7FF; --heat-4:#91C3FF; --heat-5:#BADBFF; --heat-ink-dark:#001344; --heat-ink-light:#FFFFFF;
+      --status-ok:#3FBF6A; --status-partial:#F0A93B; --ok-wash:rgba(63,191,106,.14); --partial-wash:rgba(240,169,59,.16);
+      --tooltip-bg:#E6F3FF; --tooltip-ink:#001344;
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --text-primary:#FFFFFF; --text-secondary:rgba(255,255,255,.6);
+    --page:#001344; --surface:var(--blue-800); --line:var(--blue-700); --line-strong:var(--blue-600);
+    --brand:var(--blue-400); --chip-ink:var(--blue-100); --grid:rgba(186,219,255,.14); --track:rgba(186,219,255,.08);
+    --mark:var(--blue-400);
+    --heat-1:#155EE8; --heat-2:#3D84F5; --heat-3:#69A7FF; --heat-4:#91C3FF; --heat-5:#BADBFF; --heat-ink-dark:#001344; --heat-ink-light:#FFFFFF;
+    --status-ok:#3FBF6A; --status-partial:#F0A93B; --ok-wash:rgba(63,191,106,.14); --partial-wash:rgba(240,169,59,.16);
+    --tooltip-bg:#E6F3FF; --tooltip-ink:#001344;
+    color-scheme:dark;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--page); color:var(--text-primary); font-family:var(--font-sans);
+       font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px; margin:0 auto; padding-inline:16px; padding-block:2rem 4rem}
+  @media (min-width:700px){ .wrap{padding-inline:1.5rem} }
+  h1,h2{font-weight:600; margin:0; text-wrap:balance}
+  h1{font-size:1.6rem; letter-spacing:-.01em}
+  h2{font-size:1rem}
+  .sub{color:var(--text-secondary); font-size:.88rem}
+  .num{font-variant-numeric:tabular-nums}
+  .label{font-size:.72rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.06em}
+
+  header{display:flex; flex-wrap:wrap; gap:1rem 2rem; align-items:flex-end; justify-content:space-between;
+         border-bottom:1px solid var(--line); padding-bottom:1.25rem; margin-bottom:1.5rem}
+  .brandline{display:flex; align-items:center; gap:.6rem}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--brand); flex:none}
+  .meta{display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.6rem}
+  .chip{font-size:.76rem; padding:.2rem .6rem; border-radius:999px; background:var(--surface);
+        border:1px solid var(--line); color:var(--chip-ink); white-space:nowrap}
+  .chip.demo{border-color:var(--status-partial); color:var(--status-partial); background:var(--partial-wash)}
+
+  .seg{display:inline-flex; border:1px solid var(--line-strong); border-radius:999px; padding:3px; gap:2px}
+  .seg button{font:inherit; font-size:.82rem; border:0; background:transparent; color:var(--text-primary);
+              padding:.3rem .8rem; border-radius:999px; cursor:pointer}
+  .seg button[aria-pressed="true"]{background:var(--brand); color:#FFFFFF}
+  :root[data-theme="dark"] .seg button[aria-pressed="true"]{color:#001344}
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .seg button[aria-pressed="true"]{color:#001344} }
+  .seg button:focus-visible, .cell:focus-visible, .hbar:focus-visible, .col:focus-visible{outline:2px solid var(--brand); outline-offset:2px}
+
+  .tiles{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1rem; margin-bottom:1.25rem}
+  @media (max-width:900px){ .tiles{grid-template-columns:repeat(2,minmax(0,1fr))} }
+  @media (max-width:440px){ .tiles{grid-template-columns:1fr} }
+  .tile{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:1rem 1.1rem;
+        display:flex; flex-direction:column; gap:.3rem; min-width:0}
+  .tile .big{font-size:2.1rem; font-weight:600; line-height:1.1; color:var(--brand); letter-spacing:-.02em}
+  .tile .of{font-size:1rem; color:var(--text-secondary); font-weight:400}
+  .delta{font-size:.8rem; color:var(--text-secondary)}
+  .delta.up{color:var(--status-ok)} .delta.down{color:var(--status-partial)}
+
+  .grid2{display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr); gap:1rem; margin-bottom:1rem}
+  .grid2.even{grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start}
+  @media (max-width:860px){ .grid2, .grid2.even{grid-template-columns:1fr} }
+  .panel{border:1px solid var(--line); border-radius:var(--radius); padding:1.1rem 1.2rem 1.2rem; min-width:0}
+  .panel-head{display:flex; justify-content:space-between; align-items:baseline; gap:.75rem; flex-wrap:wrap; margin-bottom:1rem}
+
+  /* weekly columns */
+  .cols{position:relative; height:200px; margin-left:2rem; display:flex; align-items:flex-end; gap:6px; border-bottom:1px solid var(--line-strong)}
+  .gridline{position:absolute; left:0; right:0; border-top:1px dashed var(--grid)}
+  .gridline span{position:absolute; left:-2rem; width:1.7rem; text-align:right; top:-.55rem; font-size:.7rem; color:var(--text-secondary)}
+  .col{flex:1; position:relative; height:100%; display:flex; align-items:flex-end; cursor:default}
+  .col i{display:block; width:100%; background:var(--mark); border-radius:4px 4px 0 0; min-height:2px}
+  .col:hover i{filter:brightness(1.15)}
+  .xlabels{display:flex; gap:6px; margin-left:2rem; margin-top:.4rem}
+  .xlabels span{flex:1; text-align:center; font-size:.68rem; color:var(--text-secondary); white-space:nowrap; overflow:hidden}
+  .xlabels span:nth-child(even){visibility:hidden}
+  @media (min-width:600px){ .xlabels span:nth-child(even){visibility:visible} }
+
+  /* horizontal bars (funnel, skills) */
+  .hbars{display:flex; flex-direction:column; gap:.55rem}
+  .hbar{display:grid; grid-template-columns:minmax(0,10.5rem) minmax(0,1fr) 2.6rem; gap:.6rem; align-items:center; font-size:.84rem}
+  .hbar .name{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .hbar .name small{color:var(--text-secondary); font-size:.72rem; margin-left:.3rem}
+  .hbar .track{height:14px; background:var(--track); border-radius:4px; overflow:hidden}
+  .hbar .fill{height:100%; background:var(--mark); border-radius:0 4px 4px 0; min-width:2px}
+  .hbar .val{text-align:right}
+  .hbar .pct{color:var(--text-secondary); font-size:.72rem}
+  @media (max-width:440px){ .hbar{grid-template-columns:minmax(0,7.5rem) minmax(0,1fr) 2.4rem} }
+
+  /* heatmap */
+  .heat-scroll{overflow-x:auto}
+  table.heat{border-collapse:separate; border-spacing:2px; font-size:.78rem}
+  table.heat th{font-weight:400; color:var(--text-secondary); padding:.2rem .35rem; white-space:nowrap}
+  table.heat thead th{writing-mode:vertical-rl; transform:rotate(180deg); text-align:left; height:9.5rem; vertical-align:bottom}
+  table.heat tbody th{text-align:left}
+  .cell{width:34px; height:28px; border-radius:4px; text-align:center; vertical-align:middle; background:var(--track); color:var(--text-secondary)}
+  .legend-ramp{display:flex; align-items:center; gap:.4rem; font-size:.72rem; color:var(--text-secondary); margin-top:.6rem}
+  .legend-ramp i{width:22px; height:10px; border-radius:2px; display:inline-block}
+
+  /* dev table */
+  .table-scroll{overflow-x:auto}
+  table.devs{width:100%; border-collapse:collapse; font-size:.86rem}
+  table.devs th{font-weight:600; text-align:left; font-size:.72rem; text-transform:uppercase; letter-spacing:.05em;
+                color:var(--text-secondary); padding:.5rem .6rem; border-bottom:1px solid var(--line-strong); white-space:nowrap}
+  table.devs td{padding:.55rem .6rem; border-bottom:1px solid var(--line); white-space:nowrap}
+  table.devs td.r, table.devs th.r{text-align:right}
+  .pill{display:inline-flex; align-items:center; gap:.35rem; font-size:.74rem; padding:.12rem .55rem; border-radius:999px}
+  .pill::before{content:""; width:6px; height:6px; border-radius:50%; background:currentColor}
+  .pill.ok{color:var(--status-ok); background:var(--ok-wash)}
+  .pill.warn{color:var(--status-partial); background:var(--partial-wash)}
+  .pill.idle{color:var(--text-secondary); background:var(--track)}
+
+  #tip{position:fixed; pointer-events:none; z-index:10; background:var(--tooltip-bg); color:var(--tooltip-ink);
+       font-size:.78rem; line-height:1.4; padding:.45rem .6rem; border-radius:var(--radius-sm); max-width:16rem}
+  footer{margin-top:2rem; font-size:.78rem; color:var(--text-secondary)}
+  footer p{margin:.3rem 0; max-width:70ch}
+  @media (prefers-reduced-motion: no-preference){ .fill, .col i{transition:width .25s ease, height .25s ease} }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="brandline"><span class="dot"></span><span class="label">CreAI · Plataforma</span></div>
+      <h1 style="margin-top:.35rem">Adopción de creai-axis</h1>
+      <div class="meta">
+        <span class="chip" id="asof">Cargando…</span>
+        <span class="chip" id="optins"></span>
+        <span class="chip demo" id="demo" hidden>Datos de demostración: devs y cifras ficticias</span>
+      </div>
+    </div>
+    <div class="seg" role="group" aria-label="Periodo">
+      <button type="button" id="p7" data-days="7" aria-pressed="false">7 días</button>
+      <button type="button" id="p30" data-days="30" aria-pressed="true">30 días</button>
+      <button type="button" id="p90" data-days="90" aria-pressed="false">90 días</button>
+    </div>
+  </header>
+
+  <section class="tiles" aria-label="Resumen del periodo">
+    <div class="tile"><span class="label">Devs activos</span><span class="big num" id="k-active"></span><span class="delta" id="k-active-d"></span></div>
+    <div class="tile"><span class="label">Invocaciones de skills</span><span class="big num" id="k-events"></span><span class="delta" id="k-events-d"></span></div>
+    <div class="tile"><span class="label">Ramas que llegaron a PR</span><span class="big num" id="k-pr"></span><span class="delta" id="k-pr-d"></span></div>
+    <div class="tile"><span class="label">Tecleadas por el dev</span><span class="big num" id="k-slash"></span><span class="delta" id="k-slash-d"></span></div>
+  </section>
+
+  <div class="grid2">
+    <section class="panel">
+      <div class="panel-head"><h2>Devs activos por semana</h2><span class="sub">Últimas 13 semanas, sin importar el periodo</span></div>
+      <div class="cols" id="weekly" aria-label="Devs activos por semana"></div>
+      <div class="xlabels" id="weekly-x"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Embudo del pipeline</h2><span class="sub" id="funnel-sub">Ramas que usaron cada paso</span></div>
+      <div class="hbars" id="funnel"></div>
+    </section>
+  </div>
+
+  <div class="grid2 even">
+    <section class="panel">
+      <div class="panel-head"><h2>Skills más usadas</h2><span class="sub" id="skills-sub"></span></div>
+      <div class="hbars" id="skills"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Quién usa qué</h2><span class="sub">Invocaciones por dev y skill</span></div>
+      <div class="heat-scroll"><table class="heat" id="heat"></table></div>
+      <div class="legend-ramp" id="heat-legend"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Devs con opt-in</h2><span class="sub">Versión instalada según su último evento</span></div>
+    <div class="table-scroll"><table class="devs" id="devs"></table></div>
+  </section>
+
+  <footer>
+    <p>Solo se registran metadatos de cada skill de creai-axis: fecha, repo, rama, plugin, versión y si se tecleó o la invocó Claude. Nunca prompts, argumentos ni código.</p>
+    <p>Una rama "llega a PR" si alguna sesión en ella usó <code>creai-create-pr</code>. Las ramas <code>main</code>, <code>develop</code> y <code>HEAD</code> no cuentan para el embudo.</p>
+  </footer>
+</div>
+<div id="tip" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<!-- Optional: defines window.AXIS_USAGE_CONFIG (see config.example.js). Missing file = demo data. -->
+<script src="config.js"></script>
+<script>
+// Live mode: define window.AXIS_USAGE_CONFIG = {supabaseUrl, supabaseAnonKey, authProvider} before this script
+// (see usage/dashboard/config.example.js). Without it the page renders labelled demo data.
+(function () {
+  const DAY = 864e5;
+  const PIPELINE = ["creai-refine-task", "creai-design-feature", "creai-estimate", "creai-implement",
+                    "creai-audit-pr", "creai-create-pr", "creai-archive"];
+  const NON_TICKET_BRANCHES = new Set(["HEAD", "main", "master", "develop"]);
+  const LATEST_COMMON = "0.15.0";
+  const fmtInt = new Intl.NumberFormat("es-MX");
+  const fmtDate = new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "short" });
+  const fmtStamp = new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  let state = { days: 30, devs: [], events: [], asOf: null, demo: true };
+  try { const saved = Number(localStorage.getItem("axis-usage-days")); if ([7, 30, 90].includes(saved)) state.days = saved; } catch (e) {}
+
+  // ---------- demo data (deterministic; placeholder names, never real people) ----------
+  function demoData() {
+    let seed = 42;
+    const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+    const now = Date.UTC(2026, 9, 7, 14, 5);
+    const repos = ["agrizar", "origo-api", "origo-web", "fabric-lakehouse", "creai-kit"];
+    const others = [["creai-common", "creai-policies"], ["creai-common", "axis-start"], ["creai-common", "axis-close"],
+                    ["creai-common", "creai-fix"], ["creai-common", "creai-onboarding"], ["creai-frontend", "creai-figma-bridge"],
+                    ["creai-data", "creai-fabric"], ["creai-data", "creai-sql-explain"], ["creai-backend", "creai-graphify"]];
+    const devs = [];
+    const events = [];
+    const n = 14;
+    for (let d = 0; d < n; d++) {
+      const name = "Dev " + String.fromCharCode(65 + d);
+      const startWeek = Math.floor(rnd() * 11);            // staggered adoption over 13 weeks
+      const intensity = 0.35 + rnd() * 0.65;
+      const finishes = rnd();                              // how far down the pipeline this dev usually goes
+      const lastWeekActive = d === 11 || d === 12 ? 9 + Math.floor(rnd() * 2) : 13;  // two devs went quiet
+      const optIn = now - (13 - startWeek) * 7 * DAY;
+      const version = d === 5 || d === 9 ? "0.14.2" : LATEST_COMMON;
+      devs.push({ id: "d" + d, display_name: name, opted_in_at: new Date(optIn).toISOString() });
+      for (let w = startWeek; w < lastWeekActive; w++) {
+        const ramp = Math.min(1, 0.4 + (w - startWeek) * 0.15);
+        const tickets = Math.round(rnd() * 3 * intensity * ramp + 0.3);
+        for (let t = 0; t < tickets; t++) {
+          const branch = "feature/ORG-" + (100 + d * 40 + w * 3 + t) + "-x";
+          const repo = repos[Math.floor(rnd() * repos.length)];
+          let depth = 2 + Math.floor((finishes * 0.6 + rnd() * 0.6) * 6);
+          depth = Math.min(depth, PIPELINE.length);
+          const start = now - (13 - w) * 7 * DAY + rnd() * 5 * DAY;
+          for (let s = rnd() < 0.55 ? 1 : 0; s < depth; s++) {
+            const ts = Math.min(now - 3600e3, start + s * 0.6 * DAY);
+            events.push({ dev_id: "d" + d, ts, repo, branch, plugin: "creai-common", plugin_version: version,
+                          skill: PIPELINE[s], trigger: rnd() < 0.78 ? "slash" : "model", cc_version: "2.1.29" + Math.floor(rnd() * 2) });
+          }
+        }
+        const extra = Math.round(rnd() * 4 * intensity);
+        for (let x = 0; x < extra; x++) {
+          const [plugin, skill] = others[Math.floor(rnd() * (d % 3 === 0 ? others.length : 6))];
+          events.push({ dev_id: "d" + d, ts: Math.min(now - 3600e3, now - (13 - w) * 7 * DAY + rnd() * 6 * DAY),
+                        repo: repos[Math.floor(rnd() * repos.length)], branch: "develop", plugin, plugin_version: version,
+                        skill, trigger: rnd() < 0.5 ? "slash" : "model", cc_version: "2.1.290" });
+        }
+      }
+    }
+    return { devs, events, asOf: now };
+  }
+
+  // ---------- live data ----------
+  async function liveData(cfg) {
+    const client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+    const { data: { session } } = await client.auth.getSession();
+    if (!session) {
+      await client.auth.signInWithOAuth({ provider: cfg.authProvider || "azure", options: { redirectTo: location.href, scopes: "email" } });
+      return null;
+    }
+    const since = new Date(Date.now() - 91 * DAY).toISOString();
+    const events = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await client.from("axis_usage_events")
+        .select("dev_id, ts, received_at, repo, branch, plugin, plugin_version, skill, trigger, cc_version")
+        .gte("ts", since).order("ts").range(from, from + 999);
+      if (error) throw error;
+      events.push(...data);
+      if (data.length < 1000) break;
+    }
+    const { data: devs, error } = await client.from("axis_usage_devs").select("id, display_name, opted_in_at, revoked_at");
+    if (error) throw error;
+    const asOf = events.reduce((m, e) => Math.max(m, Date.parse(e.received_at)), 0) || Date.now();
+    return { devs: devs.filter((d) => !d.revoked_at), events: events.map((e) => ({ ...e, ts: Date.parse(e.ts) })), asOf };
+  }
+
+  // ---------- aggregation ----------
+  function inRange(events, from, to) { return events.filter((e) => e.ts >= from && e.ts < to); }
+
+  function ticketSteps(events) {
+    const byBranch = new Map();
+    for (const e of events) {
+      if (!e.branch || NON_TICKET_BRANCHES.has(e.branch)) continue;
+      const key = e.dev_id + "|" + e.repo + "|" + e.branch;
+      if (!byBranch.has(key)) byBranch.set(key, new Set());
+      byBranch.get(key).add(e.skill);
+    }
+    return byBranch;
+  }
+
+  function summarize(events) {
+    const tickets = ticketSteps(events);
+    const started = [...tickets.values()].filter((s) => s.has("creai-design-feature") || s.has("creai-refine-task")).length;
+    const reachedPr = [...tickets.values()].filter((s) => s.has("creai-create-pr")).length;
+    return {
+      active: new Set(events.map((e) => e.dev_id)).size,
+      events: events.length,
+      started, reachedPr,
+      slashShare: events.length ? events.filter((e) => e.trigger === "slash").length / events.length : null,
+      tickets,
+    };
+  }
+
+  // ---------- rendering ----------
+  const tip = $("tip");
+  function bindTip(el, html) {
+    const show = (x, y) => { tip.innerHTML = html; tip.hidden = false;
+      const r = tip.getBoundingClientRect();
+      tip.style.left = Math.min(window.innerWidth - r.width - 8, Math.max(8, x + 12)) + "px";
+      tip.style.top = Math.max(8, y - r.height - 12) + "px"; };
+    el.addEventListener("mousemove", (ev) => show(ev.clientX, ev.clientY));
+    el.addEventListener("mouseleave", () => { tip.hidden = true; });
+    el.addEventListener("focus", () => { const r = el.getBoundingClientRect(); show(r.left + r.width / 2, r.top); });
+    el.addEventListener("blur", () => { tip.hidden = true; });
+  }
+
+  // Top of the scale; its half is always a whole number so the mid gridline labels a value the chart reaches.
+  function niceMax(v) { const step = v <= 10 ? 2 : v <= 50 ? 10 : Math.pow(10, Math.floor(Math.log10(v))); return Math.max(step, Math.ceil(v / step) * step); }
+
+  function deltaText(cur, prev, unit) {
+    if (prev === 0 && cur === 0) return { cls: "", text: "Sin actividad en el periodo anterior" };
+    if (prev === 0) return { cls: "up", text: "Nuevo frente al periodo anterior" };
+    const pct = Math.round((cur - prev) / prev * 100);
+    const word = unit ? " " + unit : "";
+    if (pct === 0) return { cls: "", text: "Igual que el periodo anterior (" + fmtInt.format(prev) + word + ")" };
+    return { cls: pct > 0 ? "up" : "down", text: (pct > 0 ? "▲ " : "▼ ") + Math.abs(pct) + "% vs periodo anterior (" + fmtInt.format(prev) + word + ")" };
+  }
+
+  function setDelta(id, d) { const el = $(id); el.className = "delta " + d.cls; el.textContent = d.text; }
+
+  function render() {
+    const now = state.asOf;
+    const days = state.days;
+    const cur = inRange(state.events, now - days * DAY, now + DAY);
+    const prev = inRange(state.events, now - 2 * days * DAY, now - days * DAY);
+    const s = summarize(cur), p = summarize(prev);
+    const devName = new Map(state.devs.map((d) => [d.id, d.display_name]));
+
+    $("asof").textContent = "Datos al " + fmtStamp.format(new Date(now));
+    $("optins").textContent = fmtInt.format(state.devs.length) + " devs con opt-in";
+    $("demo").hidden = !state.demo;
+
+    $("k-active").innerHTML = fmtInt.format(s.active) + ' <span class="of">de ' + fmtInt.format(state.devs.length) + "</span>";
+    setDelta("k-active-d", deltaText(s.active, p.active, "devs"));
+    $("k-events").textContent = fmtInt.format(s.events);
+    setDelta("k-events-d", deltaText(s.events, p.events));
+    $("k-pr").innerHTML = fmtInt.format(s.reachedPr) + ' <span class="of">de ' + fmtInt.format(s.started) + " iniciadas</span>";
+    setDelta("k-pr-d", s.started ? { cls: "", text: Math.round(s.reachedPr / s.started * 100) + "% de las ramas que iniciaron el pipeline" } : { cls: "", text: "Ninguna rama inició el pipeline" });
+    $("k-slash").textContent = s.slashShare == null ? "—" : Math.round(s.slashShare * 100) + "%";
+    setDelta("k-slash-d", { cls: "", text: s.slashShare == null ? "Sin invocaciones" : "El resto las invocó Claude por su cuenta" });
+
+    // weekly trend: 13 ISO-ish weeks ending at asOf
+    const weeks = [];
+    for (let i = 12; i >= 0; i--) {
+      const end = now - i * 7 * DAY, start = end - 7 * DAY;
+      const ev = inRange(state.events, start, end);
+      weeks.push({ start, devs: new Set(ev.map((e) => e.dev_id)).size, events: ev.length });
+    }
+    const wmax = niceMax(Math.max(1, ...weeks.map((w) => w.devs)));
+    const weekly = $("weekly");
+    weekly.innerHTML = [0.5, 1].map((f) => '<div class="gridline" style="bottom:' + f * 100 + '%"><span class="num">' + fmtInt.format(Math.round(wmax * f)) + "</span></div>").join("");
+    for (const w of weeks) {
+      const col = document.createElement("div");
+      col.className = "col"; col.tabIndex = 0;
+      col.setAttribute("aria-label", "Semana del " + fmtDate.format(new Date(w.start)) + ": " + w.devs + " devs activos");
+      col.innerHTML = '<i style="height:' + (w.devs / wmax * 100) + '%"></i>';
+      bindTip(col, "<strong>Semana del " + fmtDate.format(new Date(w.start)) + "</strong><br>" + w.devs + " devs activos<br>" + fmtInt.format(w.events) + " invocaciones");
+      weekly.appendChild(col);
+    }
+    $("weekly-x").innerHTML = weeks.map((w) => "<span>" + fmtDate.format(new Date(w.start)) + "</span>").join("");
+
+    // funnel
+    const reached = PIPELINE.map((skill) => [...s.tickets.values()].filter((set) => set.has(skill)).length);
+    const fmax = Math.max(1, ...reached);
+    $("funnel-sub").textContent = "% de " + fmtInt.format(s.tickets.size) + " ramas de trabajo que usaron cada paso";
+    $("funnel").innerHTML = "";
+    PIPELINE.forEach((skill, i) => {
+      const row = hbar(skill.replace("creai-", "/"), "", reached[i], fmax,
+        s.tickets.size ? Math.round(reached[i] / s.tickets.size * 100) + "%" : "");
+      bindTip(row, "<strong>/" + esc(skill) + "</strong><br>" + reached[i] + " ramas en el periodo");
+      $("funnel").appendChild(row);
+    });
+
+    // top skills
+    const counts = new Map();
+    for (const e of cur) { const k = e.plugin + ":" + e.skill; counts.set(k, (counts.get(k) || 0) + 1); }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const smax = Math.max(1, ...top.map((t) => t[1]));
+    $("skills").innerHTML = "";
+    $("skills-sub").textContent = counts.size > 10 ? "Top 10 de " + counts.size + " skills usadas" : counts.size + " skills usadas";
+    if (!top.length) $("skills").innerHTML = '<p class="sub">Sin invocaciones en el periodo.</p>';
+    for (const [key, n] of top) {
+      const [plugin, skill] = key.split(":");
+      const usersOf = new Set(cur.filter((e) => e.skill === skill && e.plugin === plugin).map((e) => e.dev_id)).size;
+      const row = hbar("/" + skill.replace(/^creai-/, ""), plugin.replace("creai-", ""), n, smax, "");
+      bindTip(row, "<strong>" + esc(plugin) + ":" + esc(skill) + "</strong><br>" + fmtInt.format(n) + " invocaciones<br>" + usersOf + " devs");
+      $("skills").appendChild(row);
+    }
+
+    // heatmap: devs (rows, most active first) × top 8 skills (columns)
+    const cols = top.slice(0, 8).map(([k]) => k);
+    const perDev = new Map();
+    for (const e of cur) {
+      const k = e.plugin + ":" + e.skill;
+      if (!cols.includes(k)) continue;
+      if (!perDev.has(e.dev_id)) perDev.set(e.dev_id, new Map());
+      perDev.get(e.dev_id).set(k, (perDev.get(e.dev_id).get(k) || 0) + 1);
+    }
+    const rows = state.devs.map((d) => ({ id: d.id, name: d.display_name, total: cur.filter((e) => e.dev_id === d.id).length }))
+      .sort((a, b) => b.total - a.total);
+    const hmax = Math.max(1, ...[...perDev.values()].flatMap((m) => [...m.values()]));
+    const bucket = (v) => Math.min(5, Math.ceil(v / hmax * 5));
+    const heat = $("heat");
+    heat.innerHTML = "<thead><tr><th></th>" + cols.map((k) => "<th>/" + esc(k.split(":")[1].replace(/^creai-/, "")) + "</th>").join("") + "</tr></thead>";
+    const tbody = document.createElement("tbody");
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = "<th>" + esc(r.name) + "</th>";
+      for (const k of cols) {
+        const v = perDev.get(r.id)?.get(k) || 0;
+        const td = document.createElement("td");
+        td.className = "cell num"; td.tabIndex = 0;
+        if (v) {
+          const b = bucket(v);
+          td.style.background = "var(--heat-" + b + ")";
+          td.style.color = b >= 3 ? "var(--heat-ink-dark)" : "var(--heat-ink-light)";
+          td.textContent = v;
+        } else td.textContent = "·";
+        td.setAttribute("aria-label", r.name + ", " + k + ": " + v);
+        bindTip(td, "<strong>" + esc(r.name) + "</strong><br>" + esc(k) + "<br>" + v + " invocaciones");
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    heat.appendChild(tbody);
+    $("heat-legend").innerHTML = "<span>Menos</span>" + [1, 2, 3, 4, 5].map((b) => '<i style="background:var(--heat-' + b + ')"></i>').join("") + "<span>Más · máx. " + hmax + "</span>";
+
+    // dev table
+    const devRows = state.devs.map((d) => {
+      const mine = state.events.filter((e) => e.dev_id === d.id);
+      const last = mine.reduce((m, e) => (e.ts > m.ts ? e : m), { ts: 0 });
+      const common = [...mine].reverse().find((e) => e.plugin === "creai-common");
+      return {
+        name: d.display_name, last: last.ts || null,
+        n7: inRange(mine, now - 7 * DAY, now + DAY).length, nPeriod: inRange(mine, now - days * DAY, now + DAY).length,
+        common: common?.plugin_version || "—", cc: last.cc_version || "—", optIn: Date.parse(d.opted_in_at),
+      };
+    }).sort((a, b) => (b.last || 0) - (a.last || 0));
+    $("devs").innerHTML = "<thead><tr><th>Dev</th><th>Estado</th><th>Última actividad</th><th class=\"r\">7 días</th><th class=\"r\">" + days + " días</th><th>creai-common</th><th>Claude Code</th><th>Opt-in</th></tr></thead><tbody>" +
+      devRows.map((r) => {
+        const idleDays = r.last ? (now - r.last) / DAY : Infinity;
+        const status = idleDays <= 7 ? '<span class="pill ok">Activo</span>' : idleDays <= 21 ? '<span class="pill warn">Sin uso reciente</span>' : '<span class="pill idle">Inactivo</span>';
+        const ver = r.common !== "—" && r.common !== LATEST_COMMON ? '<span class="pill warn">' + esc(r.common) + "</span>" : esc(r.common);
+        return "<tr><td>" + esc(r.name) + "</td><td>" + status + "</td><td class=\"num\">" + (r.last ? fmtDate.format(new Date(r.last)) : "—") +
+          '</td><td class="r num">' + r.n7 + '</td><td class="r num">' + r.nPeriod + "</td><td>" + ver + "</td><td class=\"num\">" + esc(r.cc) +
+          '</td><td class="num">' + fmtDate.format(new Date(r.optIn)) + "</td></tr>";
+      }).join("") + "</tbody>";
+  }
+
+  function hbar(name, tag, value, max, pct) {
+    const row = document.createElement("div");
+    row.className = "hbar"; row.tabIndex = 0;
+    row.setAttribute("aria-label", name + ": " + value);
+    row.innerHTML = '<span class="name">' + esc(name) + (tag ? "<small>" + esc(tag) + "</small>" : "") + "</span>" +
+      '<span class="track"><span class="fill" style="display:block;width:' + (value / max * 100) + '%"></span></span>' +
+      '<span class="val num">' + fmtInt.format(value) + (pct ? '<br><span class="pct">' + pct + "</span>" : "") + "</span>";
+    return row;
+  }
+
+  document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+    state.days = Number(b.dataset.days);
+    try { localStorage.setItem("axis-usage-days", String(state.days)); } catch (e) {}
+    document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    render();
+  }));
+  document.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.days) === state.days)));
+
+  async function boot() {
+    const cfg = window.AXIS_USAGE_CONFIG;
+    let failure = null;
+    if (cfg && cfg.supabaseUrl && window.supabase) {
+      try {
+        const live = await liveData(cfg);
+        if (!live) return;  // redirecting to sign-in
+        Object.assign(state, live, { demo: false });
+        return render();
+      } catch (err) {
+        failure = err.message || String(err);
+      }
+    }
+    Object.assign(state, demoData(), { demo: true });
+    render();
+    if (failure) $("demo").textContent = "No se pudo leer Supabase (" + failure + "). Se muestran datos de demostración.";
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
