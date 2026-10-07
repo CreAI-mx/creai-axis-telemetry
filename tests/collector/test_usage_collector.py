@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -82,7 +83,7 @@ class CollectorTest(unittest.TestCase):
                 fh.write(partial)
 
     def extract(self):
-        events, _ = self.mod.scan_file(self.transcript, self.mod.PluginIndex())
+        events, _, _ = self.mod.scan_file(self.transcript, self.mod.PluginIndex())
         return events
 
     def test_slash_full_name_and_bare_name_resolve_to_plugin(self):
@@ -163,7 +164,7 @@ class CollectorTest(unittest.TestCase):
         auth, body = Sink.received[0]
         self.assertEqual(auth, f"Bearer {TOKEN}")
         self.assertEqual(sorted(e["skill"] for e in body["events"]), ["creai-create-pr", "creai-implement"])
-        self.assertEqual(self.mod.OUTBOX_FILE.read_text(), "")
+        self.assertEqual(self.mod.pending_count(), 0)
 
     def test_failed_send_keeps_events_queued_for_next_session(self):
         endpoint = self.start_sink()
@@ -176,8 +177,94 @@ class CollectorTest(unittest.TestCase):
 
         Sink.status = 200
         self.run_hook({"hook_event_name": "SessionStart"})
-        self.assertEqual(self.mod.OUTBOX_FILE.read_text(), "")
+        self.assertEqual(self.mod.pending_count(), 0)
         self.assertEqual(len(Sink.received[-1][1]["events"]), 1)
+
+    # --- repo name never identifies the OS user ---
+
+    def test_repo_is_the_git_root_even_from_a_subfolder(self):
+        repo = self.tmp / "code" / "agrizar"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "docs" / "specs").mkdir(parents=True)
+        self.assertEqual(self.mod.repo_name(str(repo / "docs" / "specs")), "agrizar")
+
+    def test_repo_falls_back_to_the_folder_outside_git(self):
+        folder = self.tmp / "code" / "notes"
+        folder.mkdir(parents=True)
+        self.assertEqual(self.mod.repo_name(str(folder)), "notes")
+
+    def test_repo_is_never_the_home_folder_or_named_like_the_user(self):
+        home = self.tmp / "home" / "jdoe"
+        (home / ".git").mkdir(parents=True)  # a dotfiles repo in home
+        (home / "notes").mkdir()
+        (self.tmp / "other" / "jdoe").mkdir(parents=True)
+        with mock.patch.object(Path, "home", return_value=home), \
+                mock.patch.object(self.mod.getpass, "getuser", return_value="jdoe"):
+            self.mod.repo_name.cache_clear()
+            self.assertIsNone(self.mod.repo_name(str(home)))
+            self.assertEqual(self.mod.repo_name(str(home / "notes")), "notes")  # not climbed up into home
+            self.assertIsNone(self.mod.repo_name(str(self.tmp / "other" / "jdoe")))
+        self.mod.repo_name.cache_clear()
+
+    # --- the hook stays inside its time budget ---
+
+    def test_scan_stops_at_the_deadline_and_the_next_hook_resumes(self):
+        endpoint = self.start_sink()
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN})
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+
+        events, offset, finished = self.mod.scan_file(self.transcript, self.mod.PluginIndex(), 0, time.monotonic() - 1)
+        self.assertEqual((events, offset, finished), ([], 0, False))
+        self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex(), time.monotonic() - 1), 0)
+        self.assertEqual(self.mod.read_cursors()["incomplete"], [str(self.transcript)])
+
+        # A later session's hook (no transcript of its own) picks the file back up and sends it.
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-implement"])
+        self.assertEqual(self.mod.read_cursors()["incomplete"], [])
+
+    def test_flush_does_not_start_a_send_it_cannot_finish_in_time(self):
+        self.mod.append_events([{"id": "e1"}, {"id": "e2"}])
+        with mock.patch.object(self.mod, "post") as post:
+            result = self.mod.flush({"endpoint": "https://x", "token": TOKEN}, deadline=time.monotonic() + 1)
+        post.assert_not_called()
+        self.assertTrue(result["deferred"])
+        self.assertEqual((result["sent"], result["pending"]), (0, 2))
+        self.assertEqual(self.mod.pending_count(), 2)
+
+    # --- concurrent hooks never lose events ---
+
+    def test_events_queued_by_another_session_during_a_send_are_kept(self):
+        self.mod.append_events([{"id": "mine"}])
+
+        def post_while_another_hook_appends(_endpoint, _token, batch):
+            self.mod.append_events([{"id": "theirs"}])  # another session's hook, mid-send
+            return {"accepted": len(batch)}
+
+        with mock.patch.object(self.mod, "post", side_effect=post_while_another_hook_appends) as post:
+            self.mod.flush({"endpoint": "https://x", "token": TOKEN})
+        self.assertEqual([e["id"] for e in post.call_args[0][2]], ["mine"])
+        self.assertEqual([e["id"] for e in self.mod.read_events([self.mod.OUTBOX_FILE])], ["theirs"])
+
+    def test_stale_claims_are_adopted_and_live_ones_left_alone(self):
+        state = self.tmp / "state"
+        state.mkdir()
+        stale = state / "usage-outbox.111.1.sending"
+        stale.write_text(json.dumps({"id": "orphaned"}) + "\n")
+        old = time.time() - self.mod.STALE_CLAIM_S - 60
+        os.utime(stale, (old, old))
+        live = state / "usage-outbox.222.2.sending"
+        live.write_text(json.dumps({"id": "in-flight"}) + "\n")
+
+        with mock.patch.object(self.mod, "post") as post:
+            self.mod.flush({"endpoint": "https://x", "token": TOKEN})
+        self.assertEqual([e["id"] for e in post.call_args[0][2]], ["orphaned"])
+        self.assertFalse(stale.exists())
+        self.assertTrue(live.exists())
+        self.assertEqual(self.mod.pending_count(), 1)  # the live claim still counts as pending
+
+        self.mod.main(["optout"])
+        self.assertFalse(live.exists())
 
     def test_optin_rejects_http_and_stores_token_privately(self):
         with mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):

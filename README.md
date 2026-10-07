@@ -24,7 +24,7 @@ Then, in Claude Code, run `/creai-telemetry:creai-usage`. It shows exactly what 
 your consent, and walks you through entering your ingest token. The token never goes into the chat.
 The same skill shows status, backfills past sessions, or opts you out.
 
-**What is sent:** per creai-axis skill invocation, the timestamp, session id, repo folder name, git
+**What is sent:** per creai-axis skill invocation, the timestamp, session id, repo folder name (never your home folder or user name), git
 branch, Claude Code version, plugin and version, skill name, and whether you typed it or Claude
 invoked it. **Never sent:** prompts, arguments, code, file contents, tool output, or anything about
 other plugins.
@@ -46,7 +46,7 @@ Issuing a token in v1 means inserting into `axis_usage_devs` the email, display 
 | `plugins/creai-telemetry/hooks/hooks.json` | `SessionStart` (retry queue) and `SessionEnd` (collect + send) |
 | `plugins/creai-telemetry/skills/creai-usage/SKILL.md` | Opt in, backfill, status, opt out |
 | `tests/collector/` | Collector unit tests |
-| `supabase/migrations/`, `supabase/functions/ingest/` | Schema, RLS, views; ingest endpoint |
+| `supabase/migrations/`, `supabase/functions/ingest/` | Schema, RLS, views; ingest endpoint (`handler.ts` holds the logic and its tests) |
 | `dashboard/index.html`, `dashboard/config.example.js` | Dashboard; demo data until `config.js` exists |
 
 ## Develop
@@ -54,7 +54,7 @@ Issuing a token in v1 means inserting into `axis_usage_devs` the email, display 
 ```bash
 python3 -m unittest discover -s tests/collector                        # collector tests, stdlib only
 python3 plugins/creai-telemetry/hooks/usage-collector.py extract ~/.claude/projects/*/*.jsonl   # what would be sent; sends nothing
-deno check supabase/functions/ingest/index.ts                          # or: npx -y deno check …
+deno check supabase/functions/ingest/ && deno test --no-lock supabase/functions/ingest/   # or via npx -y deno
 python3 -m http.server -d dashboard 8000                               # dashboard with demo data
 ```
 

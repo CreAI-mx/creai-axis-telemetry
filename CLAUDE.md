@@ -7,12 +7,12 @@ source of truth.
 
 ## Commands
 - Collector tests: `python3 -m unittest discover -s tests/collector`
-- Function type-check: `deno check supabase/functions/ingest/index.ts`
+- Ingest function: `deno check supabase/functions/ingest/` and `deno test --no-lock supabase/functions/ingest/`
 - Dashboard locally: `python3 -m http.server -d dashboard 8000`
 
 ## Rules
 - **Privacy is the product.** Never add a field that carries prompts, skill arguments, code, file
-  paths beyond the repo basename, or anything from non-creai-axis plugins. Any new field needs a
+  paths beyond the repo name (never the home folder or OS user name), or anything from non-creai-axis plugins. Any new field needs a
   row in the design's event contract and a line in the skill's "What is sent".
 - **The hook never hurts a session.** `hook` always exits 0, never prompts, and stays inside the
   10 s hook timeout. It does nothing until opted in.

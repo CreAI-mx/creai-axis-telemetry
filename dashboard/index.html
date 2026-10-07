@@ -227,7 +227,8 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  let state = { days: 30, devs: [], events: [], asOf: null, demo: true };
+  // now: the clock for rolling windows and statuses. asOf: newest received_at, only for the freshness label.
+  let state = { days: 30, devs: [], events: [], now: null, asOf: null, demo: true };
   try { const saved = Number(localStorage.getItem("axis-usage-days")); if ([7, 30, 90].includes(saved)) state.days = saved; } catch (e) {}
 
   // ---------- demo data (deterministic; placeholder names, never real people) ----------
@@ -275,7 +276,7 @@
         }
       }
     }
-    return { devs, events, asOf: now };
+    return { devs, events, now, asOf: now };
   }
 
   // ---------- live data ----------
@@ -298,8 +299,9 @@
     }
     const { data: devs, error } = await client.from("axis_usage_devs").select("id, display_name, opted_in_at, revoked_at");
     if (error) throw error;
-    const asOf = events.reduce((m, e) => Math.max(m, Date.parse(e.received_at)), 0) || Date.now();
-    return { devs: devs.filter((d) => !d.revoked_at), events: events.map((e) => ({ ...e, ts: Date.parse(e.ts) })), asOf };
+    // Windows run on the wall clock, so a stalled ingest shows devs going idle instead of freezing them as active.
+    const asOf = events.reduce((m, e) => Math.max(m, Date.parse(e.received_at)), 0) || null;
+    return { devs: devs.filter((d) => !d.revoked_at), events: events.map((e) => ({ ...e, ts: Date.parse(e.ts) })), now: Date.now(), asOf };
   }
 
   // ---------- aggregation ----------
@@ -318,8 +320,9 @@
 
   function summarize(events) {
     const tickets = ticketSteps(events);
-    const started = [...tickets.values()].filter((s) => s.has("creai-design-feature") || s.has("creai-refine-task")).length;
-    const reachedPr = [...tickets.values()].filter((s) => s.has("creai-create-pr")).length;
+    const startedSets = [...tickets.values()].filter((s) => s.has("creai-design-feature") || s.has("creai-refine-task"));
+    const started = startedSets.length;
+    const reachedPr = startedSets.filter((s) => s.has("creai-create-pr")).length;  // out of started, so never above 100%
     return {
       active: new Set(events.map((e) => e.dev_id)).size,
       events: events.length,
@@ -357,14 +360,14 @@
   function setDelta(id, d) { const el = $(id); el.className = "delta " + d.cls; el.textContent = d.text; }
 
   function render() {
-    const now = state.asOf;
+    const now = state.now;
     const days = state.days;
     const cur = inRange(state.events, now - days * DAY, now + DAY);
     const prev = inRange(state.events, now - 2 * days * DAY, now - days * DAY);
     const s = summarize(cur), p = summarize(prev);
     const devName = new Map(state.devs.map((d) => [d.id, d.display_name]));
 
-    $("asof").textContent = "Datos al " + fmtStamp.format(new Date(now));
+    $("asof").textContent = state.asOf ? "Datos al " + fmtStamp.format(new Date(state.asOf)) : "Sin datos recibidos";
     $("optins").textContent = fmtInt.format(state.devs.length) + " devs con opt-in";
     $("demo").hidden = !state.demo;
 
@@ -377,7 +380,7 @@
     $("k-slash").textContent = s.slashShare == null ? "—" : Math.round(s.slashShare * 100) + "%";
     setDelta("k-slash-d", { cls: "", text: s.slashShare == null ? "Sin invocaciones" : "El resto las invocó Claude por su cuenta" });
 
-    // weekly trend: 13 ISO-ish weeks ending at asOf
+    // weekly trend: 13 ISO-ish weeks ending now
     const weeks = [];
     for (let i = 12; i >= 0; i--) {
       const end = now - i * 7 * DAY, start = end - 7 * DAY;

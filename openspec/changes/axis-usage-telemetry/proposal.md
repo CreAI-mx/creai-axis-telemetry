@@ -54,7 +54,7 @@ Everything is new, in `creai-axis-telemetry`:
 | `plugins/creai-telemetry/hooks/usage-collector.py` | Stdlib-only Python. It stays inert until opt-in. At `SessionEnd` it parses that session's transcript (and its subagents) from a byte cursor and queues one event per creai-axis skill, then sends the queue. At `SessionStart` it retries anything still queued. It always exits 0. |
 | `plugins/creai-telemetry/hooks/hooks.json` | `SessionStart` and `SessionEnd` blocks only. |
 | `plugins/creai-telemetry/skills/creai-usage/` | `/creai-telemetry:creai-usage`: opt in (with explicit consent and the token kept out of the chat), backfill, status, opt out. |
-| `tests/collector/` | Ten unit tests for the collector: parsing, privacy (arguments and text never captured), cursors, the hook never failing, send and retry, and opt-in file permissions. Run in CI on macOS and Linux, Python 3.9 and 3.12. |
+| `tests/collector/`, `supabase/functions/ingest/handler.test.ts` | Collector unit tests: parsing, privacy (arguments, text and OS user name never captured), cursors, the hook's time budget, concurrent sessions, send and retry, opt-in file permissions. Ingest tests: auth, malformed bodies, validation. Run in CI on macOS and Linux, Python 3.9 and 3.12, and Deno. |
 | `supabase/` | Migration (append-only events, opt-in devs, RLS, views) and the `ingest` Edge Function. |
 | `dashboard/` | Static page; demo data until `config.js` points it at Supabase. |
 

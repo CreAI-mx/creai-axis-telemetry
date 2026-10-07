@@ -25,7 +25,7 @@ One row per skill invocation. Field by field, this is everything that leaves the
 | `id` | sha1 hex | sha1(sessionId, record uuid or tool_use id, plugin, skill, trigger). It's stable, so resends are idempotent. |
 | `ts` | `2026-10-05T18:33:29Z` | `timestamp` |
 | `session` | uuid | `sessionId` |
-| `repo` | `agrizar` | basename of `cwd`. Never the full path, which contains the OS username. |
+| `repo` | `agrizar` | Name of the git repo root containing `cwd` (so subfolder sessions roll up), else the `cwd` folder name. Never searched above the home folder. `null` when that name is the home folder or matches the OS user name. Never the full path, which contains the OS username. |
 | `branch` | `feature/DAIL-256-axis-v2` | `gitBranch` |
 | `cc_version` | `2.1.290` | `version` |
 | `plugin`, `plugin_version` | `creai-common`, `0.15.0` | Resolved via `installed_plugins.json`, `@creai-axis` entries only |
@@ -59,8 +59,17 @@ sequenceDiagram
   C->>F: retry whatever is still queued
 ```
 
-Hook timeout is 10 s, while the worst case is a 5 s HTTP timeout per batch. A partial last line, from a
-transcript still being written, is left for the next run via the cursor.
+**Time budget.** Claude Code kills the hook at 10 s, so the hook budgets 8 s. It scans until 2 s are
+used, leaving room for one 5 s send. A file it didn't finish goes on an `incomplete` list in the cursor
+file, and the next hook (any session's, start or end) resumes it. It only starts a batch whose 5 s HTTP
+timeout still fits the budget; the rest stays queued. A partial last line, from a transcript still
+being written, is left for the next run via the cursor.
+
+**Concurrent sessions.** Several Claude sessions share one outbox. Hooks append with a single
+`O_APPEND` write. To send, a hook renames the outbox to a claim file of its own, so lines appended
+meanwhile land in a fresh outbox and can't be overwritten. Unsent events are re-appended before the
+claim is deleted: a crash in between duplicates events (the server ignores repeated ids) but never
+loses them. A claim untouched for 10 minutes belongs to a dead process and is adopted by the next flush.
 
 ## Identity and auth
 

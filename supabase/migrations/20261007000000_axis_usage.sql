@@ -21,7 +21,7 @@ create table public.axis_usage_events (
   ts              timestamptz not null,
   received_at     timestamptz not null default now(),
   session_id      text,
-  repo            text,           -- basename of the session cwd
+  repo            text,           -- git repo (or cwd) folder name; null if it could name the OS user
   branch          text,
   cc_version      text,           -- Claude Code version
   plugin          text not null,  -- e.g. creai-common

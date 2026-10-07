@@ -18,8 +18,10 @@ The collector is `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/usage-collector.py"`; cal
 
 ## What is sent — read this to the dev before opting in
 
-Per skill invocation: timestamp, session id, repo folder name, git branch, Claude Code version, plugin,
-plugin version, skill name, and whether the dev typed it (`slash`) or Claude invoked it (`model`).
+Per skill invocation: timestamp, session id, project name (the git repo's folder name, or the folder
+Claude ran in; never the home folder or anything named like the OS user), git branch, Claude Code
+version, plugin, plugin version, skill name, and whether the dev typed it (`slash`) or Claude invoked
+it (`model`).
 The dev's name and email come from their ingest token, server-side.
 
 **Never sent:** prompts, skill arguments, code, file contents, tool output, or anything from
