@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import urllib.error
@@ -63,6 +64,10 @@ HTTP_TIMEOUT_S = 5
 HOOK_BUDGET_S = 8
 STALE_CLAIM_S = 600  # a claimed outbox older than this belongs to a process that died mid-send
 LOCK_TIMEOUT_S = 2  # the lock is only held for small file operations, never while scanning or sending
+# Only records containing one of these can hold an event. Everything else (tool output, which can
+# be megabytes per line) is skipped without parsing, which keeps scans fast and inside the budget.
+RECORD_MARKERS = (b'"Skill"', b"<command-name>")
+MAX_RECORD_BYTES = 8 * 1024 * 1024  # a matching record this large is pasted content, not an invocation
 ABANDONED_PARTIAL_S = 86400  # a transcript whose last line stayed cut off this long was never finished
 
 STATE_DIR = Path(os.environ.get("CREAI_AXIS_USAGE_DIR") or Path.home() / ".config" / "creai-axis")
@@ -72,6 +77,8 @@ CLAIM_GLOB = "usage-outbox.*.sending"  # flush renames the outbox to one of thes
 CURSOR_FILE = STATE_DIR / "usage-cursors.json"
 LAST_SEND_FILE = STATE_DIR / "usage-last-send.json"
 LOCK_FILE = STATE_DIR / "usage.lock"
+# One file per transcript to rescan, written without the lock, for when collect couldn't get it.
+RESCAN_DIR = STATE_DIR / "usage-rescan"
 
 
 def claude_dir():
@@ -220,6 +227,8 @@ def scan_file(path, index, start=0, deadline=None):
             if not raw.endswith(b"\n"):
                 return events, offset, "partial"
             offset += len(raw)
+            if len(raw) > MAX_RECORD_BYTES or not any(marker in raw for marker in RECORD_MARKERS):
+                continue
             try:
                 rec = json.loads(raw)
             except ValueError:
@@ -236,6 +245,42 @@ def session_files(transcript_path):
     if sub_dir.is_dir():
         files.extend(sorted(sub_dir.glob("*.jsonl")))
     return files
+
+
+def _rescan_marker(key):
+    return RESCAN_DIR / hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def mark_for_rescan(keys):
+    """Remember transcripts to rescan without taking the lock: one atomically written file each."""
+    RESCAN_DIR.mkdir(parents=True, exist_ok=True)
+    for key in keys:
+        marker = _rescan_marker(key)
+        tmp = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+        tmp.write_text(key, encoding="utf-8")
+        os.replace(tmp, marker)
+
+
+def marked_for_rescan():
+    try:
+        markers = [m for m in RESCAN_DIR.iterdir() if not m.name.startswith(".")]
+    except OSError:
+        return []
+    keys = []
+    for marker in markers:
+        try:
+            keys.append(marker.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return keys
+
+
+def clear_rescan_marks(keys):
+    for key in keys:
+        try:
+            _rescan_marker(key).unlink()
+        except OSError:
+            pass
 
 
 @contextlib.contextmanager
@@ -317,8 +362,13 @@ def collect(paths, index, deadline=None):
         # Unfinished files (out of time, or a last line still being written) stay listed for later hooks.
         progress[key] = (offset, status == "done")
     with state_lock() as locked:
-        if not locked or not CONFIG_FILE.exists():
-            return 0  # cursors unchanged (or opted out meanwhile): queue nothing
+        if not CONFIG_FILE.exists():
+            return 0  # opted out meanwhile: queue nothing
+        if not locked:
+            # Cursors stay unchanged, so a rescan finds these events again. Mark the files (no lock
+            # needed) so the next hook rescans them even if this was its only reference to them.
+            mark_for_rescan(key for key, (offset, _) in progress.items() if offset is not None)
+            return 0
         # Re-read under the lock and change only our own paths: another hook may have saved its
         # progress on other transcripts since we started, and overwriting it would lose that.
         cursors = read_cursors()
@@ -329,6 +379,7 @@ def collect(paths, index, deadline=None):
             (incomplete.discard if finished else incomplete.add)(key)
         _append_unlocked(queued)
         write_json(CURSOR_FILE, {"offsets": offsets, "incomplete": sorted(incomplete)})
+        clear_rescan_marks(progress)
     return len(queued)
 
 
@@ -465,8 +516,10 @@ def cmd_hook(_args):
         paths = []
         if payload.get("hook_event_name") == "SessionEnd" and payload.get("transcript_path"):
             paths = session_files(payload["transcript_path"])
-        # Also resume files an earlier hook ran out of time on.
-        paths += [Path(p) for p in read_cursors()["incomplete"] if Path(p) not in paths]
+        # Also resume files an earlier hook ran out of time on, or couldn't save because of the lock.
+        for key in [*read_cursors()["incomplete"], *marked_for_rescan()]:
+            if Path(key) not in paths:
+                paths.append(Path(key))
         if paths:
             # Leave room in the budget for at least one send.
             collect(paths, PluginIndex(), deadline - HTTP_TIMEOUT_S - 1)
@@ -502,6 +555,7 @@ def cmd_optout(_args):
                 path.unlink()
             except FileNotFoundError:
                 pass
+        shutil.rmtree(RESCAN_DIR, ignore_errors=True)
     print("Opted out. Local config, queue and cursors deleted. "
           "Events already sent stay on the server until an admin deletes them.")
     return 0

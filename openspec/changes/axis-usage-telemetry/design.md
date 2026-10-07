@@ -64,13 +64,16 @@ used, leaving room for one 5 s send. A file it didn't finish goes on an `incompl
 file, and the next hook (any session's, start or end) resumes it. It only starts a batch whose 5 s HTTP
 timeout still fits the budget; the rest stays queued. A last line still being written when the hook
 runs also keeps the file on the `incomplete` list, so a later hook collects it once it's complete. A
-line still cut off after a day is abandoned (its writer died).
+line still cut off after a day is abandoned (its writer died). Only lines containing `"Skill"` or
+`<command-name>` are parsed as JSON; tool output, which can run to megabytes per line, is skipped
+unparsed, and so is any line over 8 MB.
 
 **Concurrent sessions.** Several Claude sessions share one outbox and one cursor file. Every
 read-modify-write of either one happens under a cross-process lock (`usage.lock`: `flock` on macOS and
 Linux, `msvcrt.locking` on Windows). Those writes are appending events, renaming the outbox to a
 claim, and saving cursors. The lock is never held while scanning or sending, and a hook that can't get
-it within 2 s leaves state untouched for the next hook.
+it within 2 s leaves state untouched for the next hook. So that the next hook knows to rescan, it first
+writes one marker file per transcript to `usage-rescan/`, which needs no lock.
 - **Sending.** A hook claims the outbox by renaming it under the lock and sends it unlocked. Events
   queued meanwhile go to a fresh outbox. Unsent events are re-appended before the claim is deleted: a
   crash in between duplicates events (the server ignores repeated ids) but never loses them. A claim

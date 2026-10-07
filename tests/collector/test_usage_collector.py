@@ -348,6 +348,32 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.mod.pending_count(), 0)  # not requeued after opt-out
         self.assertEqual([p.name for p in (self.tmp / "state").iterdir()], ["usage.lock"])  # only the empty lock file
 
+    def test_a_transcript_scanned_while_the_lock_is_busy_is_rescanned_by_the_next_hook(self):
+        endpoint = self.start_sink()
+        self.opt_in(endpoint)
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        self.mod.LOCK_TIMEOUT_S = 0.1
+        with self.mod.state_lock():  # another hook holds the lock for the whole SessionEnd
+            self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+        self.assertEqual(Sink.received, [])
+        self.assertEqual(self.mod.marked_for_rescan(), [str(self.transcript)])
+
+        # A later session's SessionStart has no transcript of its own, but finds the marker.
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-implement"])
+        self.assertEqual(self.mod.marked_for_rescan(), [])
+
+    def test_only_records_that_can_hold_an_event_are_parsed(self):
+        big_tool_output = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": "x" * 200_000}]}}
+        self.write_records(*([big_tool_output] * 20), rec_skill("toolu_1", "creai-implement"),
+                           rec_user("u1", "<command-name>/creai-create-pr</command-name>"))
+        index = self.mod.PluginIndex()  # reads installed_plugins.json; not counted below
+        with mock.patch.object(self.mod.json, "loads", side_effect=json.loads) as loads:
+            events, _, _ = self.mod.scan_file(self.transcript, index)
+        self.assertEqual([e["skill"] for e in events], ["creai-implement", "creai-create-pr"])
+        self.assertEqual(loads.call_count, 2)
+
     def test_optin_rejects_http_and_stores_token_privately(self):
         with mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):
             self.assertEqual(self.mod.main(["optin", "--endpoint", "http://insecure"]), 2)
