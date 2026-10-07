@@ -25,7 +25,7 @@ One row per skill invocation. Field by field, this is everything that leaves the
 | `id` | sha1 hex | sha1(sessionId, record uuid or tool_use id, plugin, skill, trigger). It's stable, so resends are idempotent. |
 | `ts` | `2026-10-05T18:33:29Z` | `timestamp` |
 | `session` | uuid | `sessionId` |
-| `repo` | `agrizar` | basename of `cwd`. Never the full path, which contains the OS username. |
+| `repo` | `agrizar` | Name of the git repo root containing `cwd` (so subfolder sessions roll up), else the `cwd` folder name. Never searched above the home folder. `null` when that name is the home folder or matches the OS user name. Never the full path, which contains the OS username. |
 | `branch` | `feature/DAIL-256-axis-v2` | `gitBranch` |
 | `cc_version` | `2.1.290` | `version` |
 | `plugin`, `plugin_version` | `creai-common`, `0.15.0` | Resolved via `installed_plugins.json`, `@creai-axis` entries only |
@@ -59,8 +59,28 @@ sequenceDiagram
   C->>F: retry whatever is still queued
 ```
 
-Hook timeout is 10 s, while the worst case is a 5 s HTTP timeout per batch. A partial last line, from a
-transcript still being written, is left for the next run via the cursor.
+**Time budget.** Claude Code kills the hook at 10 s, so the hook budgets 8 s. It scans until 2 s are
+used, leaving room for one 5 s send. A file it didn't finish goes on an `incomplete` list in the cursor
+file, and the next hook (any session's, start or end) resumes it. It only starts a batch whose 5 s HTTP
+timeout still fits the budget; the rest stays queued. A last line still being written when the hook
+runs also keeps the file on the `incomplete` list, so a later hook collects it once it's complete. A
+line still cut off after a day is abandoned (its writer died). Only lines containing `"Skill"` or
+`<command-name>` are parsed as JSON; tool output, which can run to megabytes per line, is skipped
+unparsed, and so is any line over 8 MB.
+
+**Concurrent sessions.** Several Claude sessions share one outbox and one cursor file. Every
+read-modify-write of either one happens under a cross-process lock (`usage.lock`: `flock` on macOS and
+Linux, `msvcrt.locking` on Windows). Those writes are appending events, renaming the outbox to a
+claim, and saving cursors. The lock is never held while scanning or sending, and a hook that can't get
+it within 2 s leaves state untouched for the next hook. So that the next hook knows to rescan, it first
+writes one marker file per transcript to `usage-rescan/`, which needs no lock.
+- **Sending.** A hook claims the outbox by renaming it under the lock and sends it unlocked. Events
+  queued meanwhile go to a fresh outbox. Unsent events are re-appended before the claim is deleted: a
+  crash in between duplicates events (the server ignores repeated ids) but never loses them. A claim
+  untouched for 10 minutes belongs to a dead process, and the next flush adopts it.
+- **Cursors.** A hook scans from a snapshot of the cursors, then re-reads them under the lock and
+  updates only its own transcripts, so it never overwrites another hook's progress or its
+  `incomplete` list.
 
 ## Identity and auth
 
@@ -80,8 +100,10 @@ transcript still being written, is left for the next run via the cursor.
 
 - Opt-in per dev, named, with the same view for everyone at creai. Announce it in the team channel
   before the first token is issued.
-- Opt-out deletes local state immediately. Deleting server rows is an admin action on request; it's
-  the one exception to append-only, and it's logged in the Jira ticket.
+- Opt-out deletes local state immediately, under the lock. A hook that was mid-send when the dev
+  opted out drops its unsent events instead of requeueing them; only an empty `usage.lock` remains.
+  Deleting server rows is an admin action on request; it's the one exception to append-only, and
+  it's logged in the Jira ticket.
 - ASSUMPTION: retention of 13 months, enough for a year-over-year view. A monthly `pg_cron` job would
   delete older rows. Confirm with whoever owns creai's privacy notice (LFPDPPP); employee data
   processing may need a line in the internal privacy notice.

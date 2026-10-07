@@ -5,7 +5,7 @@ Reads Claude Code session transcripts on this machine, extracts one metadata-onl
 creai-axis skill invocation, and sends them to the team's ingest endpoint.
 
 Nothing runs until the developer opts in (`optin`), which writes the config file below.
-Only metadata leaves the machine: timestamp, session id, repo basename, branch, Claude Code
+Only metadata leaves the machine: timestamp, session id, repo name, branch, Claude Code
 version, plugin, plugin version, skill, and whether it was typed (slash) or invoked by Claude
 (model). Prompts, skill arguments, code and tool output are never read into an event.
 
@@ -20,28 +20,65 @@ Subcommands:
 Design: openspec/changes/axis-usage-telemetry/design.md
 """
 import argparse
+import contextlib
+import functools
 import getpass
 import hashlib
 import json
 import os
 import re
+import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+if os.name == "nt":
+    import msvcrt
+
+    def _try_lock(fd):
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd):
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _try_lock(fd):
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd):
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 MARKETPLACE = "creai-axis"
 FALLBACK_PLUGINS = {"creai-common", "creai-backend", "creai-frontend", "creai-data", "creai-arch"}
 COMMAND_RE = re.compile(r"<command-name>/?([a-z0-9-]+(?::[a-z0-9-]+)?)</command-name>")
 BATCH_SIZE = 500
 HTTP_TIMEOUT_S = 5
+# Claude Code kills the hook at 10 s (hooks.json). Stop scanning and sending well before that and
+# leave the rest for the next hook: unscanned files stay listed as incomplete, unsent events stay queued.
+HOOK_BUDGET_S = 8
+STALE_CLAIM_S = 600  # a claimed outbox older than this belongs to a process that died mid-send
+LOCK_TIMEOUT_S = 2  # the lock is only held for small file operations, never while scanning or sending
+# Only records containing one of these can hold an event. Everything else (tool output, which can
+# be megabytes per line) is skipped without parsing, which keeps scans fast and inside the budget.
+RECORD_MARKERS = (b'"Skill"', b"<command-name>")
+MAX_RECORD_BYTES = 8 * 1024 * 1024  # a matching record this large is pasted content, not an invocation
+ABANDONED_PARTIAL_S = 86400  # a transcript whose last line stayed cut off this long was never finished
 
 STATE_DIR = Path(os.environ.get("CREAI_AXIS_USAGE_DIR") or Path.home() / ".config" / "creai-axis")
 CONFIG_FILE = STATE_DIR / "usage.json"
 OUTBOX_FILE = STATE_DIR / "usage-outbox.jsonl"
+CLAIM_GLOB = "usage-outbox.*.sending"  # flush renames the outbox to one of these before sending it
 CURSOR_FILE = STATE_DIR / "usage-cursors.json"
 LAST_SEND_FILE = STATE_DIR / "usage-last-send.json"
+LOCK_FILE = STATE_DIR / "usage.lock"
+# One file per transcript to rescan, written without the lock, for when collect couldn't get it.
+RESCAN_DIR = STATE_DIR / "usage-rescan"
 
 
 def claude_dir():
@@ -94,6 +131,48 @@ class PluginIndex:
         return None
 
 
+def _os_username():
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - no usable user name in the environment
+        return None
+
+
+def _same_name(a, b):
+    """Case-insensitive match: Windows and default macOS filesystems ignore case, so JDOE is jdoe."""
+    return a is not None and b is not None and str(a).casefold() == str(b).casefold()
+
+
+@functools.lru_cache(maxsize=512)
+def repo_name(cwd):
+    """Name of the project a session ran in, or None if that name could identify the OS user.
+
+    Uses the enclosing git repository root when there is one below the home directory, so sessions
+    started in a subfolder count toward their repo; otherwise the cwd folder itself. Never the home
+    directory (its name is the OS user name) or any folder named like the user.
+    """
+    if not cwd:
+        return None
+    path = Path(cwd)
+    try:
+        home = Path.home()
+    except (KeyError, RuntimeError):
+        home = None
+    project = path
+    for candidate in (path, *path.parents):
+        if _same_name(candidate, home):
+            break  # don't climb into home: a dotfiles repo there would name every session after the user
+        try:
+            if (candidate / ".git").exists():
+                project = candidate
+                break
+        except OSError:
+            break
+    if not project.name or _same_name(project, home) or _same_name(project.name, _os_username()):
+        return None
+    return project.name
+
+
 def event_id(*parts):
     return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()
 
@@ -121,7 +200,7 @@ def events_from_record(rec, index):
             "id": event_id(rec.get("sessionId"), source_id or rec.get("timestamp"), plugin, skill, trigger),
             "ts": rec.get("timestamp"),
             "session": rec.get("sessionId"),
-            "repo": os.path.basename(rec.get("cwd") or "") or None,
+            "repo": repo_name(rec.get("cwd")),
             "branch": rec.get("gitBranch") or None,
             "cc_version": rec.get("version"),
             "plugin": plugin,
@@ -131,22 +210,31 @@ def events_from_record(rec, index):
         }
 
 
-def scan_file(path, index, start=0):
-    """Return (events, new_offset) for complete lines of `path` after byte offset `start`."""
+def scan_file(path, index, start=0, deadline=None):
+    """Return (events, new_offset, status) for complete lines of `path` after byte offset `start`.
+
+    status is "done" at the end of the file, "deadline" when `deadline` (a time.monotonic() value)
+    passed first, or "partial" when the last line is still being written. For the last two,
+    `new_offset` marks where to resume.
+    """
     events = []
     with open(path, "rb") as fh:
         fh.seek(start)
         offset = start
         for raw in fh:
+            if deadline is not None and time.monotonic() > deadline:
+                return events, offset, "deadline"
             if not raw.endswith(b"\n"):
-                break  # partial line still being written; pick it up next time
+                return events, offset, "partial"
             offset += len(raw)
+            if len(raw) > MAX_RECORD_BYTES or not any(marker in raw for marker in RECORD_MARKERS):
+                continue
             try:
                 rec = json.loads(raw)
             except ValueError:
                 continue
             events.extend(events_from_record(rec, index))
-    return events, offset
+    return events, offset, "done"
 
 
 def session_files(transcript_path):
@@ -159,26 +247,139 @@ def session_files(transcript_path):
     return files
 
 
-def collect(paths, index):
-    cursors = read_json(CURSOR_FILE, {})
-    queued = []
+def _rescan_marker(key):
+    return RESCAN_DIR / hashlib.sha1(key.encode("utf-8")).hexdigest()
+
+
+def mark_for_rescan(keys):
+    """Remember transcripts to rescan without taking the lock: one atomically written file each."""
+    RESCAN_DIR.mkdir(parents=True, exist_ok=True)
+    for key in keys:
+        marker = _rescan_marker(key)
+        tmp = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+        tmp.write_text(key, encoding="utf-8")
+        os.replace(tmp, marker)
+
+
+def marked_for_rescan():
+    try:
+        markers = [m for m in RESCAN_DIR.iterdir() if not m.name.startswith(".")]
+    except OSError:
+        return []
+    keys = []
+    for marker in markers:
+        try:
+            keys.append(marker.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return keys
+
+
+def clear_rescan_marks(keys):
+    for key in keys:
+        try:
+            _rescan_marker(key).unlink()
+        except OSError:
+            pass
+
+
+@contextlib.contextmanager
+def state_lock(timeout_s=None):
+    """Exclusive cross-process lock over the outbox and cursor file. Yields False if it timed out.
+
+    Several Claude sessions run hooks at once. Every read-modify-write of shared state (appending to
+    the outbox, renaming it to a claim, updating cursors) happens under this lock; scanning and
+    sending happen outside it. Callers that don't get the lock leave state untouched and retry later.
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = False
+    try:
+        end = time.monotonic() + (LOCK_TIMEOUT_S if timeout_s is None else timeout_s)
+        while True:
+            try:
+                _try_lock(fd)
+                acquired = True
+                break
+            except OSError:
+                if time.monotonic() >= end:
+                    break
+                time.sleep(0.02)
+        yield acquired
+    finally:
+        if acquired:
+            _unlock(fd)
+        os.close(fd)
+
+
+def read_cursors():
+    """{"offsets": {path: byte offset}, "incomplete": [paths a deadline stopped mid-file]}."""
+    state = read_json(CURSOR_FILE, {})
+    return {"offsets": dict(state.get("offsets") or {}), "incomplete": list(state.get("incomplete") or [])}
+
+
+def _append_unlocked(events):
+    """Append to the outbox. The caller holds state_lock()."""
+    if not events:
+        return
+    data = "".join(json.dumps(ev) + "\n" for ev in events).encode("utf-8")
+    fd = os.open(OUTBOX_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        while data:
+            data = data[os.write(fd, data):]
+    finally:
+        os.close(fd)
+
+
+def append_events(events):
+    """Append events to the outbox. Returns False (nothing written) if the lock timed out."""
+    if not events:
+        return True
+    with state_lock() as locked:
+        if locked:
+            _append_unlocked(events)
+        return locked
+
+
+def collect(paths, index, deadline=None):
+    """Scan `paths` from their cursors and queue new events. Returns how many were queued."""
+    start_offsets = read_cursors()["offsets"]
+    queued, progress = [], {}  # progress: path -> (new offset or None if gone, finished)
     for path in paths:
         key = str(path)
         try:
-            size = path.stat().st_size
+            st = path.stat()
         except OSError:
+            progress[key] = (None, True)  # gone; nothing left to resume
             continue
-        start = cursors.get(key, 0)
-        if start > size:  # file was rewritten; rescan (server dedupes by id)
+        start = start_offsets.get(key, 0)
+        if start > st.st_size:  # file was rewritten; rescan (server dedupes by id)
             start = 0
-        events, cursors[key] = scan_file(path, index, start)
+        events, offset, status = scan_file(path, index, start, deadline)
+        if status == "partial" and time.time() - st.st_mtime > ABANDONED_PARTIAL_S:
+            status = "done"  # the writer died mid-line; nothing more will come
         queued.extend(events)
-    if queued:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        with open(OUTBOX_FILE, "a", encoding="utf-8") as fh:
-            for ev in queued:
-                fh.write(json.dumps(ev) + "\n")
-    write_json(CURSOR_FILE, cursors)
+        # Unfinished files (out of time, or a last line still being written) stay listed for later hooks.
+        progress[key] = (offset, status == "done")
+    with state_lock() as locked:
+        if not CONFIG_FILE.exists():
+            return 0  # opted out meanwhile: queue nothing
+        if not locked:
+            # Cursors stay unchanged, so a rescan finds these events again. Mark the files (no lock
+            # needed) so the next hook rescans them even if this was its only reference to them.
+            mark_for_rescan(key for key, (offset, _) in progress.items() if offset is not None)
+            return 0
+        # Re-read under the lock and change only our own paths: another hook may have saved its
+        # progress on other transcripts since we started, and overwriting it would lose that.
+        cursors = read_cursors()
+        offsets, incomplete = cursors["offsets"], set(cursors["incomplete"])
+        for key, (offset, finished) in progress.items():
+            if offset is not None:
+                offsets[key] = offset
+            (incomplete.discard if finished else incomplete.add)(key)
+        _append_unlocked(queued)
+        write_json(CURSOR_FILE, {"offsets": offsets, "incomplete": sorted(incomplete)})
+        clear_rescan_marks(progress)
     return len(queued)
 
 
@@ -193,36 +394,108 @@ def post(endpoint, token, events):
         return json.loads(resp.read() or b"{}")
 
 
-def flush(config):
+def _claim_unlocked():
+    """Take ownership of everything queued. The caller holds state_lock().
+
+    The outbox is renamed to a claim file private to this process, so events other sessions append
+    meanwhile go to a fresh outbox. Claims left by a process that died mid-send are adopted once stale.
+    """
+    stem = f"usage-outbox.{os.getpid()}.{time.time_ns()}"
+    claims = []
     try:
-        lines = OUTBOX_FILE.read_text(encoding="utf-8").splitlines()
+        claim = STATE_DIR / f"{stem}.sending"
+        os.replace(OUTBOX_FILE, claim)
+        os.utime(claim)  # mtime = claim time, so other processes don't adopt it as stale
+        claims.append(claim)
     except OSError:
-        return {"sent": 0, "pending": 0}
-    events, seen = [], set()
-    for line in lines:
-        try:
-            ev = json.loads(line)
-        except ValueError:
+        pass  # nothing queued
+    now = time.time()
+    for n, orphan in enumerate(sorted(STATE_DIR.glob(CLAIM_GLOB))):
+        if orphan in claims:
             continue
-        if ev.get("id") not in seen:
-            seen.add(ev.get("id"))
-            events.append(ev)
+        try:
+            if now - orphan.stat().st_mtime < STALE_CLAIM_S:
+                continue  # another process is still sending it
+            adopted = STATE_DIR / f"{stem}.{n}.sending"
+            os.replace(orphan, adopted)  # if two processes race, only one rename succeeds
+            os.utime(adopted)
+            claims.append(adopted)
+        except OSError:
+            continue
+    return claims
+
+
+def read_events(paths):
+    events, seen = [], set()
+    for path in paths:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(ev, dict) and ev.get("id") not in seen:
+                seen.add(ev.get("id"))
+                events.append(ev)
+    return events
+
+
+def flush(config, deadline=None):
+    """Send queued events in batches; whatever isn't sent goes back to the outbox.
+
+    With a `deadline` (time.monotonic() value), a batch is only started if its HTTP timeout still
+    fits before it, so the hook never outlives its budget.
+    """
+    if not STATE_DIR.is_dir():
+        return {"sent": 0, "pending": 0}
+    with state_lock() as locked:
+        claims = _claim_unlocked() if locked else []
+    if not claims:
+        return {"sent": 0, "pending": 0}
+    events = read_events(claims)
     sent = 0
-    result = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    result = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "ok": True}
     try:
         for i in range(0, len(events), BATCH_SIZE):
-            post(config["endpoint"], config["token"], events[i:i + BATCH_SIZE])
-            sent = i + len(events[i:i + BATCH_SIZE])
-        result["ok"] = True
+            if deadline is not None and time.monotonic() + HTTP_TIMEOUT_S > deadline:
+                result["deferred"] = True  # out of time; the next hook sends the rest
+                break
+            batch = events[i:i + BATCH_SIZE]
+            post(config["endpoint"], config["token"], batch)
+            sent = i + len(batch)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         result.update(ok=False, error=str(getattr(exc, "code", "")) or type(exc).__name__)
     remaining = events[sent:]
-    tmp = OUTBOX_FILE.with_suffix(".tmp")
-    tmp.write_text("".join(json.dumps(ev) + "\n" for ev in remaining), encoding="utf-8")
-    os.replace(tmp, OUTBOX_FILE)
+    with state_lock() as locked:
+        if locked and not CONFIG_FILE.exists():
+            done = claims  # the dev opted out while we were sending: drop, don't requeue
+        elif locked:
+            # Requeue before deleting the claims: a crash in between duplicates, never loses.
+            _append_unlocked(remaining)
+            done = claims
+        else:
+            # Keep the unsent events in our own claim; it goes stale and the next flush adopts it.
+            keep = claims[0]
+            tmp = keep.with_suffix(".tmp")
+            tmp.write_text("".join(json.dumps(ev) + "\n" for ev in remaining), encoding="utf-8")
+            os.replace(tmp, keep)
+            done = claims[1:]
+        for claim in done:
+            try:
+                claim.unlink()
+            except OSError:
+                pass
     result.update(sent=sent, pending=len(remaining))
-    write_json(LAST_SEND_FILE, result)
+    if CONFIG_FILE.exists():  # after an opt-out mid-send, leave no state behind
+        write_json(LAST_SEND_FILE, result)
     return result
+
+
+def pending_count():
+    return len(read_events([OUTBOX_FILE, *sorted(STATE_DIR.glob(CLAIM_GLOB))])) if STATE_DIR.is_dir() else 0
 
 
 def load_config():
@@ -238,10 +511,19 @@ def cmd_hook(_args):
         config = load_config()
         if not config:
             return 0
+        deadline = time.monotonic() + HOOK_BUDGET_S
         payload = json.load(sys.stdin)
+        paths = []
         if payload.get("hook_event_name") == "SessionEnd" and payload.get("transcript_path"):
-            collect(session_files(payload["transcript_path"]), PluginIndex())
-        flush(config)
+            paths = session_files(payload["transcript_path"])
+        # Also resume files an earlier hook ran out of time on, or couldn't save because of the lock.
+        for key in [*read_cursors()["incomplete"], *marked_for_rescan()]:
+            if Path(key) not in paths:
+                paths.append(Path(key))
+        if paths:
+            # Leave room in the budget for at least one send.
+            collect(paths, PluginIndex(), deadline - HTTP_TIMEOUT_S - 1)
+        flush(config, deadline)
     except Exception:  # noqa: BLE001 - see comment above
         pass
     return 0
@@ -263,11 +545,17 @@ def cmd_optin(args):
 
 
 def cmd_optout(_args):
-    for path in (CONFIG_FILE, OUTBOX_FILE, CURSOR_FILE, LAST_SEND_FILE):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+    # Under the lock, so no hook is mid-append or mid-claim. A hook already sending re-checks the
+    # config under the lock afterwards and drops its events. The lock file stays: deleting it would
+    # let two processes lock different inodes. Without the lock in time, delete anyway.
+    with (state_lock(timeout_s=10) if STATE_DIR.is_dir() else contextlib.nullcontext(False)):
+        claims = sorted(STATE_DIR.glob(CLAIM_GLOB)) if STATE_DIR.is_dir() else []
+        for path in (CONFIG_FILE, OUTBOX_FILE, CURSOR_FILE, LAST_SEND_FILE, *claims):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(RESCAN_DIR, ignore_errors=True)
     print("Opted out. Local config, queue and cursors deleted. "
           "Events already sent stay on the server until an admin deletes them.")
     return 0
@@ -302,10 +590,7 @@ def cmd_flush(_args):
 
 def cmd_status(_args):
     config = load_config()
-    try:
-        pending = sum(1 for _ in open(OUTBOX_FILE, encoding="utf-8"))
-    except OSError:
-        pending = 0
+    pending = pending_count()
     print(json.dumps({
         "opted_in": bool(config),
         "endpoint": config["endpoint"] if config else None,
@@ -320,7 +605,7 @@ def cmd_status(_args):
 def cmd_extract(args):
     index = PluginIndex()
     for path in args.files:
-        events, _ = scan_file(path, index)
+        events, _, _ = scan_file(path, index)
         for ev in events:
             print(json.dumps(ev))
     return 0

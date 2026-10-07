@@ -20,7 +20,8 @@ Order is contract-first: the backend accepts events before any dev can send them
 - [ ] Admin script to issue and revoke tokens (replaces manual SQL)
 
 ## 2. Collector (`plugins/creai-telemetry/`)
-- [x] Collector, hooks, `/creai-telemetry:creai-usage` skill, 10 tests, CI
+- [x] Collector, hooks, `/creai-telemetry:creai-usage` skill, tests, CI
+- [x] Copilot review fixes: repo name never the OS user, hook time budget, concurrent-safe outbox (0.1.1)
 - [ ] Windows launcher, per the decision in 0
 - [ ] Install test on a clean machine: `claude plugin marketplace add CreAI-mx/creai-axis-telemetry`, then install `creai-telemetry`
 
