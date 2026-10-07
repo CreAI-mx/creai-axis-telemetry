@@ -63,6 +63,7 @@ HTTP_TIMEOUT_S = 5
 HOOK_BUDGET_S = 8
 STALE_CLAIM_S = 600  # a claimed outbox older than this belongs to a process that died mid-send
 LOCK_TIMEOUT_S = 2  # the lock is only held for small file operations, never while scanning or sending
+ABANDONED_PARTIAL_S = 86400  # a transcript whose last line stayed cut off this long was never finished
 
 STATE_DIR = Path(os.environ.get("CREAI_AXIS_USAGE_DIR") or Path.home() / ".config" / "creai-axis")
 CONFIG_FILE = STATE_DIR / "usage.json"
@@ -203,10 +204,11 @@ def events_from_record(rec, index):
 
 
 def scan_file(path, index, start=0, deadline=None):
-    """Return (events, new_offset, finished) for complete lines of `path` after byte offset `start`.
+    """Return (events, new_offset, status) for complete lines of `path` after byte offset `start`.
 
-    `finished` is False when `deadline` (a time.monotonic() value) passed before the end of the file;
-    `new_offset` then marks where to resume.
+    status is "done" at the end of the file, "deadline" when `deadline` (a time.monotonic() value)
+    passed first, or "partial" when the last line is still being written. For the last two,
+    `new_offset` marks where to resume.
     """
     events = []
     with open(path, "rb") as fh:
@@ -214,16 +216,16 @@ def scan_file(path, index, start=0, deadline=None):
         offset = start
         for raw in fh:
             if deadline is not None and time.monotonic() > deadline:
-                return events, offset, False
+                return events, offset, "deadline"
             if not raw.endswith(b"\n"):
-                break  # partial line still being written; pick it up next time
+                return events, offset, "partial"
             offset += len(raw)
             try:
                 rec = json.loads(raw)
             except ValueError:
                 continue
             events.extend(events_from_record(rec, index))
-    return events, offset, True
+    return events, offset, "done"
 
 
 def session_files(transcript_path):
@@ -301,19 +303,22 @@ def collect(paths, index, deadline=None):
     for path in paths:
         key = str(path)
         try:
-            size = path.stat().st_size
+            st = path.stat()
         except OSError:
             progress[key] = (None, True)  # gone; nothing left to resume
             continue
         start = start_offsets.get(key, 0)
-        if start > size:  # file was rewritten; rescan (server dedupes by id)
+        if start > st.st_size:  # file was rewritten; rescan (server dedupes by id)
             start = 0
-        events, offset, finished = scan_file(path, index, start, deadline)
+        events, offset, status = scan_file(path, index, start, deadline)
+        if status == "partial" and time.time() - st.st_mtime > ABANDONED_PARTIAL_S:
+            status = "done"  # the writer died mid-line; nothing more will come
         queued.extend(events)
-        progress[key] = (offset, finished)
+        # Unfinished files (out of time, or a last line still being written) stay listed for later hooks.
+        progress[key] = (offset, status == "done")
     with state_lock() as locked:
-        if not locked:
-            return 0  # cursors unchanged, so the next hook rescans and queues these events
+        if not locked or not CONFIG_FILE.exists():
+            return 0  # cursors unchanged (or opted out meanwhile): queue nothing
         # Re-read under the lock and change only our own paths: another hook may have saved its
         # progress on other transcripts since we started, and overwriting it would lose that.
         cursors = read_cursors()
@@ -414,7 +419,9 @@ def flush(config, deadline=None):
         result.update(ok=False, error=str(getattr(exc, "code", "")) or type(exc).__name__)
     remaining = events[sent:]
     with state_lock() as locked:
-        if locked:
+        if locked and not CONFIG_FILE.exists():
+            done = claims  # the dev opted out while we were sending: drop, don't requeue
+        elif locked:
             # Requeue before deleting the claims: a crash in between duplicates, never loses.
             _append_unlocked(remaining)
             done = claims
@@ -431,7 +438,8 @@ def flush(config, deadline=None):
             except OSError:
                 pass
     result.update(sent=sent, pending=len(remaining))
-    write_json(LAST_SEND_FILE, result)
+    if CONFIG_FILE.exists():  # after an opt-out mid-send, leave no state behind
+        write_json(LAST_SEND_FILE, result)
     return result
 
 
@@ -484,12 +492,16 @@ def cmd_optin(args):
 
 
 def cmd_optout(_args):
-    claims = sorted(STATE_DIR.glob(CLAIM_GLOB)) if STATE_DIR.is_dir() else []
-    for path in (CONFIG_FILE, OUTBOX_FILE, CURSOR_FILE, LAST_SEND_FILE, LOCK_FILE, *claims):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+    # Under the lock, so no hook is mid-append or mid-claim. A hook already sending re-checks the
+    # config under the lock afterwards and drops its events. The lock file stays: deleting it would
+    # let two processes lock different inodes. Without the lock in time, delete anyway.
+    with (state_lock(timeout_s=10) if STATE_DIR.is_dir() else contextlib.nullcontext(False)):
+        claims = sorted(STATE_DIR.glob(CLAIM_GLOB)) if STATE_DIR.is_dir() else []
+        for path in (CONFIG_FILE, OUTBOX_FILE, CURSOR_FILE, LAST_SEND_FILE, *claims):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
     print("Opted out. Local config, queue and cursors deleted. "
           "Events already sent stay on the server until an admin deletes them.")
     return 0

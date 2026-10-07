@@ -82,6 +82,9 @@ class CollectorTest(unittest.TestCase):
             if partial:
                 fh.write(partial)
 
+    def opt_in(self, endpoint="https://x"):
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN})
+
     def extract(self):
         events, _, _ = self.mod.scan_file(self.transcript, self.mod.PluginIndex())
         return events
@@ -120,6 +123,7 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(first, [e["id"] for e in self.extract()])
 
     def test_cursor_skips_processed_lines_and_waits_for_partial_line(self):
+        self.opt_in()
         self.write_records(rec_skill("toolu_1", "creai-implement"), partial='{"type": "assist')
         self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex()), 1)
         self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex()), 0)
@@ -217,7 +221,7 @@ class CollectorTest(unittest.TestCase):
         self.write_records(rec_skill("toolu_1", "creai-implement"))
 
         events, offset, finished = self.mod.scan_file(self.transcript, self.mod.PluginIndex(), 0, time.monotonic() - 1)
-        self.assertEqual((events, offset, finished), ([], 0, False))
+        self.assertEqual((events, offset, finished), ([], 0, "deadline"))
         self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex(), time.monotonic() - 1), 0)
         self.assertEqual(self.mod.read_cursors()["incomplete"], [str(self.transcript)])
 
@@ -227,6 +231,7 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.mod.read_cursors()["incomplete"], [])
 
     def test_flush_does_not_start_a_send_it_cannot_finish_in_time(self):
+        self.opt_in()
         self.mod.append_events([{"id": "e1"}, {"id": "e2"}])
         with mock.patch.object(self.mod, "post") as post:
             result = self.mod.flush({"endpoint": "https://x", "token": TOKEN}, deadline=time.monotonic() + 1)
@@ -270,6 +275,7 @@ class CollectorTest(unittest.TestCase):
         self.assertFalse(live.exists())
 
     def test_while_another_hook_holds_the_lock_nothing_shared_is_touched(self):
+        self.opt_in()
         self.write_records(rec_skill("toolu_1", "creai-implement"))
         self.mod.append_events([{"id": "queued"}])
         self.mod.LOCK_TIMEOUT_S = 0.1
@@ -286,6 +292,7 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.mod.pending_count(), 2)
 
     def test_concurrent_hooks_keep_each_others_cursor_progress(self):
+        self.opt_in()
         other = self.transcript.with_name("s2.jsonl")
         other.write_text(json.dumps(rec_skill("toolu_2", "creai-create-pr")) + "\n")
         self.write_records(rec_skill("toolu_1", "creai-implement"))
@@ -305,6 +312,41 @@ class CollectorTest(unittest.TestCase):
         cursors = self.mod.read_cursors()
         self.assertIn(str(other), cursors["offsets"])  # the other hook's progress survived
         self.assertEqual(cursors["incomplete"], [str(self.transcript)])  # and so did ours
+
+    def test_a_line_still_being_written_is_resumed_by_a_later_hook(self):
+        endpoint = self.start_sink()
+        self.opt_in(endpoint)
+        line = json.dumps(rec_skill("toolu_1", "creai-implement"))
+        self.write_records(partial=line[:20])  # SessionEnd fires before the last line is flushed
+        self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+        self.assertEqual(self.mod.read_cursors()["incomplete"], [str(self.transcript)])
+
+        with open(self.transcript, "a", encoding="utf-8") as fh:
+            fh.write(line[20:] + "\n")
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-implement"])
+        self.assertEqual(self.mod.read_cursors()["incomplete"], [])
+
+    def test_a_line_cut_off_for_a_day_is_given_up(self):
+        self.opt_in()
+        self.write_records(rec_skill("toolu_1", "creai-implement"), partial='{"type": "assist')
+        old = time.time() - self.mod.ABANDONED_PARTIAL_S - 60
+        os.utime(self.transcript, (old, old))
+        self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex()), 1)
+        self.assertEqual(self.mod.read_cursors()["incomplete"], [])
+
+    def test_opting_out_mid_send_leaves_nothing_queued(self):
+        self.opt_in()
+        self.mod.append_events([{"id": "e1"}])
+
+        def optout_then_fail(_endpoint, _token, _batch):
+            self.mod.main(["optout"])  # the dev opts out while this hook is sending
+            raise self.mod.urllib.error.URLError("offline")
+
+        with mock.patch.object(self.mod, "post", side_effect=optout_then_fail):
+            self.mod.flush({"endpoint": "https://x", "token": TOKEN})
+        self.assertEqual(self.mod.pending_count(), 0)  # not requeued after opt-out
+        self.assertEqual([p.name for p in (self.tmp / "state").iterdir()], ["usage.lock"])  # only the empty lock file
 
     def test_optin_rejects_http_and_stores_token_privately(self):
         with mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):

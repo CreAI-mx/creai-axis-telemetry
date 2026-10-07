@@ -62,8 +62,9 @@ sequenceDiagram
 **Time budget.** Claude Code kills the hook at 10 s, so the hook budgets 8 s. It scans until 2 s are
 used, leaving room for one 5 s send. A file it didn't finish goes on an `incomplete` list in the cursor
 file, and the next hook (any session's, start or end) resumes it. It only starts a batch whose 5 s HTTP
-timeout still fits the budget; the rest stays queued. A partial last line, from a transcript still
-being written, is left for the next run via the cursor.
+timeout still fits the budget; the rest stays queued. A last line still being written when the hook
+runs also keeps the file on the `incomplete` list, so a later hook collects it once it's complete. A
+line still cut off after a day is abandoned (its writer died).
 
 **Concurrent sessions.** Several Claude sessions share one outbox and one cursor file. Every
 read-modify-write of either one happens under a cross-process lock (`usage.lock`: `flock` on macOS and
@@ -96,8 +97,10 @@ it within 2 s leaves state untouched for the next hook.
 
 - Opt-in per dev, named, with the same view for everyone at creai. Announce it in the team channel
   before the first token is issued.
-- Opt-out deletes local state immediately. Deleting server rows is an admin action on request; it's
-  the one exception to append-only, and it's logged in the Jira ticket.
+- Opt-out deletes local state immediately, under the lock. A hook that was mid-send when the dev
+  opted out drops its unsent events instead of requeueing them; only an empty `usage.lock` remains.
+  Deleting server rows is an admin action on request; it's the one exception to append-only, and
+  it's logged in the Jira ticket.
 - ASSUMPTION: retention of 13 months, enough for a year-over-year view. A monthly `pg_cron` job would
   delete older rows. Confirm with whoever owns creai's privacy notice (LFPDPPP); employee data
   processing may need a line in the internal privacy notice.
