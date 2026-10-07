@@ -1,0 +1,6 @@
+# Minimal Supabase CLI config. `supabase link --project-ref <ref>` points it at the creai org project.
+project_id = "creai-axis-telemetry"
+
+# The ingest function authenticates with per-dev ingest tokens, not Supabase JWTs.
+[functions.ingest]
+verify_jwt = false
