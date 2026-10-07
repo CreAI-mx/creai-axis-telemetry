@@ -108,6 +108,11 @@ def _os_username():
         return None
 
 
+def _same_name(a, b):
+    """Case-insensitive match: Windows and default macOS filesystems ignore case, so JDOE is jdoe."""
+    return a is not None and b is not None and str(a).casefold() == str(b).casefold()
+
+
 @functools.lru_cache(maxsize=512)
 def repo_name(cwd):
     """Name of the project a session ran in, or None if that name could identify the OS user.
@@ -125,7 +130,7 @@ def repo_name(cwd):
         home = None
     project = path
     for candidate in (path, *path.parents):
-        if candidate == home:
+        if _same_name(candidate, home):
             break  # don't climb into home: a dotfiles repo there would name every session after the user
         try:
             if (candidate / ".git").exists():
@@ -133,7 +138,7 @@ def repo_name(cwd):
                 break
         except OSError:
             break
-    if project == home or not project.name or project.name == _os_username():
+    if not project.name or _same_name(project, home) or _same_name(project.name, _os_username()):
         return None
     return project.name
 

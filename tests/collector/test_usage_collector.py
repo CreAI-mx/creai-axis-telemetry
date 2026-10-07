@@ -204,6 +204,9 @@ class CollectorTest(unittest.TestCase):
             self.assertIsNone(self.mod.repo_name(str(home)))
             self.assertEqual(self.mod.repo_name(str(home / "notes")), "notes")  # not climbed up into home
             self.assertIsNone(self.mod.repo_name(str(self.tmp / "other" / "jdoe")))
+            # Case-insensitive filesystems: the same folders spelled in another case are still the user's.
+            self.assertIsNone(self.mod.repo_name(str(self.tmp / "home" / "JDOE")))
+            self.assertIsNone(self.mod.repo_name(str(self.tmp / "other" / "JDoe")))
         self.mod.repo_name.cache_clear()
 
     # --- the hook stays inside its time budget ---
