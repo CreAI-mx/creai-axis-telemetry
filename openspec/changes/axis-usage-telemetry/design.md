@@ -65,11 +65,18 @@ file, and the next hook (any session's, start or end) resumes it. It only starts
 timeout still fits the budget; the rest stays queued. A partial last line, from a transcript still
 being written, is left for the next run via the cursor.
 
-**Concurrent sessions.** Several Claude sessions share one outbox. Hooks append with a single
-`O_APPEND` write. To send, a hook renames the outbox to a claim file of its own, so lines appended
-meanwhile land in a fresh outbox and can't be overwritten. Unsent events are re-appended before the
-claim is deleted: a crash in between duplicates events (the server ignores repeated ids) but never
-loses them. A claim untouched for 10 minutes belongs to a dead process and is adopted by the next flush.
+**Concurrent sessions.** Several Claude sessions share one outbox and one cursor file. Every
+read-modify-write of either one happens under a cross-process lock (`usage.lock`: `flock` on macOS and
+Linux, `msvcrt.locking` on Windows). Those writes are appending events, renaming the outbox to a
+claim, and saving cursors. The lock is never held while scanning or sending, and a hook that can't get
+it within 2 s leaves state untouched for the next hook.
+- **Sending.** A hook claims the outbox by renaming it under the lock and sends it unlocked. Events
+  queued meanwhile go to a fresh outbox. Unsent events are re-appended before the claim is deleted: a
+  crash in between duplicates events (the server ignores repeated ids) but never loses them. A claim
+  untouched for 10 minutes belongs to a dead process, and the next flush adopts it.
+- **Cursors.** A hook scans from a snapshot of the cursors, then re-reads them under the lock and
+  updates only its own transcripts, so it never overwrites another hook's progress or its
+  `incomplete` list.
 
 ## Identity and auth
 

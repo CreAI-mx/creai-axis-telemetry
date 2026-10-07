@@ -20,6 +20,7 @@ Subcommands:
 Design: openspec/changes/axis-usage-telemetry/design.md
 """
 import argparse
+import contextlib
 import functools
 import getpass
 import hashlib
@@ -33,6 +34,25 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+if os.name == "nt":
+    import msvcrt
+
+    def _try_lock(fd):
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd):
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _try_lock(fd):
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
 MARKETPLACE = "creai-axis"
 FALLBACK_PLUGINS = {"creai-common", "creai-backend", "creai-frontend", "creai-data", "creai-arch"}
 COMMAND_RE = re.compile(r"<command-name>/?([a-z0-9-]+(?::[a-z0-9-]+)?)</command-name>")
@@ -42,6 +62,7 @@ HTTP_TIMEOUT_S = 5
 # leave the rest for the next hook: unscanned files stay listed as incomplete, unsent events stay queued.
 HOOK_BUDGET_S = 8
 STALE_CLAIM_S = 600  # a claimed outbox older than this belongs to a process that died mid-send
+LOCK_TIMEOUT_S = 2  # the lock is only held for small file operations, never while scanning or sending
 
 STATE_DIR = Path(os.environ.get("CREAI_AXIS_USAGE_DIR") or Path.home() / ".config" / "creai-axis")
 CONFIG_FILE = STATE_DIR / "usage.json"
@@ -49,6 +70,7 @@ OUTBOX_FILE = STATE_DIR / "usage-outbox.jsonl"
 CLAIM_GLOB = "usage-outbox.*.sending"  # flush renames the outbox to one of these before sending it
 CURSOR_FILE = STATE_DIR / "usage-cursors.json"
 LAST_SEND_FILE = STATE_DIR / "usage-last-send.json"
+LOCK_FILE = STATE_DIR / "usage.lock"
 
 
 def claude_dir():
@@ -214,17 +236,45 @@ def session_files(transcript_path):
     return files
 
 
+@contextlib.contextmanager
+def state_lock(timeout_s=None):
+    """Exclusive cross-process lock over the outbox and cursor file. Yields False if it timed out.
+
+    Several Claude sessions run hooks at once. Every read-modify-write of shared state (appending to
+    the outbox, renaming it to a claim, updating cursors) happens under this lock; scanning and
+    sending happen outside it. Callers that don't get the lock leave state untouched and retry later.
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = False
+    try:
+        end = time.monotonic() + (LOCK_TIMEOUT_S if timeout_s is None else timeout_s)
+        while True:
+            try:
+                _try_lock(fd)
+                acquired = True
+                break
+            except OSError:
+                if time.monotonic() >= end:
+                    break
+                time.sleep(0.02)
+        yield acquired
+    finally:
+        if acquired:
+            _unlock(fd)
+        os.close(fd)
+
+
 def read_cursors():
     """{"offsets": {path: byte offset}, "incomplete": [paths a deadline stopped mid-file]}."""
     state = read_json(CURSOR_FILE, {})
     return {"offsets": dict(state.get("offsets") or {}), "incomplete": list(state.get("incomplete") or [])}
 
 
-def append_events(events):
-    """Append events to the outbox in one O_APPEND write, so concurrent hooks never interleave or overwrite."""
+def _append_unlocked(events):
+    """Append to the outbox. The caller holds state_lock()."""
     if not events:
         return
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
     data = "".join(json.dumps(ev) + "\n" for ev in events).encode("utf-8")
     fd = os.open(OUTBOX_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
@@ -234,25 +284,46 @@ def append_events(events):
         os.close(fd)
 
 
+def append_events(events):
+    """Append events to the outbox. Returns False (nothing written) if the lock timed out."""
+    if not events:
+        return True
+    with state_lock() as locked:
+        if locked:
+            _append_unlocked(events)
+        return locked
+
+
 def collect(paths, index, deadline=None):
-    cursors = read_cursors()
-    offsets, incomplete = cursors["offsets"], set(cursors["incomplete"])
-    queued = []
+    """Scan `paths` from their cursors and queue new events. Returns how many were queued."""
+    start_offsets = read_cursors()["offsets"]
+    queued, progress = [], {}  # progress: path -> (new offset or None if gone, finished)
     for path in paths:
         key = str(path)
         try:
             size = path.stat().st_size
         except OSError:
-            incomplete.discard(key)  # gone; nothing left to resume
+            progress[key] = (None, True)  # gone; nothing left to resume
             continue
-        start = offsets.get(key, 0)
+        start = start_offsets.get(key, 0)
         if start > size:  # file was rewritten; rescan (server dedupes by id)
             start = 0
-        events, offsets[key], finished = scan_file(path, index, start, deadline)
+        events, offset, finished = scan_file(path, index, start, deadline)
         queued.extend(events)
-        (incomplete.discard if finished else incomplete.add)(key)
-    append_events(queued)
-    write_json(CURSOR_FILE, {"offsets": offsets, "incomplete": sorted(incomplete)})
+        progress[key] = (offset, finished)
+    with state_lock() as locked:
+        if not locked:
+            return 0  # cursors unchanged, so the next hook rescans and queues these events
+        # Re-read under the lock and change only our own paths: another hook may have saved its
+        # progress on other transcripts since we started, and overwriting it would lose that.
+        cursors = read_cursors()
+        offsets, incomplete = cursors["offsets"], set(cursors["incomplete"])
+        for key, (offset, finished) in progress.items():
+            if offset is not None:
+                offsets[key] = offset
+            (incomplete.discard if finished else incomplete.add)(key)
+        _append_unlocked(queued)
+        write_json(CURSOR_FILE, {"offsets": offsets, "incomplete": sorted(incomplete)})
     return len(queued)
 
 
@@ -267,15 +338,12 @@ def post(endpoint, token, events):
         return json.loads(resp.read() or b"{}")
 
 
-def claim_outbox():
-    """Take ownership of everything queued, without blocking other hooks.
+def _claim_unlocked():
+    """Take ownership of everything queued. The caller holds state_lock().
 
     The outbox is renamed to a claim file private to this process, so events other sessions append
-    meanwhile go to a fresh outbox and can't be overwritten. Claims left by a process that died
-    mid-send are adopted once they are stale.
+    meanwhile go to a fresh outbox. Claims left by a process that died mid-send are adopted once stale.
     """
-    if not STATE_DIR.is_dir():
-        return []
     stem = f"usage-outbox.{os.getpid()}.{time.time_ns()}"
     claims = []
     try:
@@ -284,7 +352,7 @@ def claim_outbox():
         os.utime(claim)  # mtime = claim time, so other processes don't adopt it as stale
         claims.append(claim)
     except OSError:
-        pass  # nothing queued, or (Windows) another process has the outbox open; next hook retries
+        pass  # nothing queued
     now = time.time()
     for n, orphan in enumerate(sorted(STATE_DIR.glob(CLAIM_GLOB))):
         if orphan in claims:
@@ -325,7 +393,10 @@ def flush(config, deadline=None):
     With a `deadline` (time.monotonic() value), a batch is only started if its HTTP timeout still
     fits before it, so the hook never outlives its budget.
     """
-    claims = claim_outbox()
+    if not STATE_DIR.is_dir():
+        return {"sent": 0, "pending": 0}
+    with state_lock() as locked:
+        claims = _claim_unlocked() if locked else []
     if not claims:
         return {"sent": 0, "pending": 0}
     events = read_events(claims)
@@ -342,12 +413,23 @@ def flush(config, deadline=None):
     except (urllib.error.URLError, OSError, ValueError) as exc:
         result.update(ok=False, error=str(getattr(exc, "code", "")) or type(exc).__name__)
     remaining = events[sent:]
-    append_events(remaining)  # requeue before deleting the claims: a crash in between duplicates, never loses
-    for claim in claims:
-        try:
-            claim.unlink()
-        except OSError:
-            pass
+    with state_lock() as locked:
+        if locked:
+            # Requeue before deleting the claims: a crash in between duplicates, never loses.
+            _append_unlocked(remaining)
+            done = claims
+        else:
+            # Keep the unsent events in our own claim; it goes stale and the next flush adopts it.
+            keep = claims[0]
+            tmp = keep.with_suffix(".tmp")
+            tmp.write_text("".join(json.dumps(ev) + "\n" for ev in remaining), encoding="utf-8")
+            os.replace(tmp, keep)
+            done = claims[1:]
+        for claim in done:
+            try:
+                claim.unlink()
+            except OSError:
+                pass
     result.update(sent=sent, pending=len(remaining))
     write_json(LAST_SEND_FILE, result)
     return result
@@ -403,7 +485,7 @@ def cmd_optin(args):
 
 def cmd_optout(_args):
     claims = sorted(STATE_DIR.glob(CLAIM_GLOB)) if STATE_DIR.is_dir() else []
-    for path in (CONFIG_FILE, OUTBOX_FILE, CURSOR_FILE, LAST_SEND_FILE, *claims):
+    for path in (CONFIG_FILE, OUTBOX_FILE, CURSOR_FILE, LAST_SEND_FILE, LOCK_FILE, *claims):
         try:
             path.unlink()
         except FileNotFoundError:

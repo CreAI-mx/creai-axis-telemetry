@@ -269,6 +269,43 @@ class CollectorTest(unittest.TestCase):
         self.mod.main(["optout"])
         self.assertFalse(live.exists())
 
+    def test_while_another_hook_holds_the_lock_nothing_shared_is_touched(self):
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        self.mod.append_events([{"id": "queued"}])
+        self.mod.LOCK_TIMEOUT_S = 0.1
+        with self.mod.state_lock() as locked:  # another hook mid-append or mid-claim
+            self.assertTrue(locked)
+            with mock.patch.object(self.mod, "post") as post:
+                self.assertEqual(self.mod.flush({"endpoint": "https://x", "token": TOKEN}), {"sent": 0, "pending": 0})
+            post.assert_not_called()
+            self.assertTrue(self.mod.OUTBOX_FILE.exists())  # not renamed under the other hook
+            self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex()), 0)
+            self.assertEqual(self.mod.read_cursors()["offsets"], {})  # so the next hook rescans
+        # Once the lock is free, the same calls go through and nothing was lost.
+        self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex()), 1)
+        self.assertEqual(self.mod.pending_count(), 2)
+
+    def test_concurrent_hooks_keep_each_others_cursor_progress(self):
+        other = self.transcript.with_name("s2.jsonl")
+        other.write_text(json.dumps(rec_skill("toolu_2", "creai-create-pr")) + "\n")
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        real_scan = self.mod.scan_file
+        interleaved = []
+
+        def scan_then_let_another_hook_finish(path, index, start=0, deadline=None):
+            result = real_scan(path, index, start, deadline)
+            if not interleaved:  # another session's hook saves its progress while we are scanning
+                interleaved.append(True)
+                self.mod.collect([other], index)
+            return result
+
+        with mock.patch.object(self.mod, "scan_file", side_effect=scan_then_let_another_hook_finish):
+            # This hook runs out of time on its own transcript, so it must stay listed as incomplete.
+            self.mod.collect([self.transcript], self.mod.PluginIndex(), time.monotonic() - 1)
+        cursors = self.mod.read_cursors()
+        self.assertIn(str(other), cursors["offsets"])  # the other hook's progress survived
+        self.assertEqual(cursors["incomplete"], [str(self.transcript)])  # and so did ours
+
     def test_optin_rejects_http_and_stores_token_privately(self):
         with mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):
             self.assertEqual(self.mod.main(["optin", "--endpoint", "http://insecure"]), 2)
