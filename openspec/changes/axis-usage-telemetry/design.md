@@ -110,9 +110,14 @@ writes one marker file per transcript to `usage-rescan/`, which needs no lock.
   opted out drops its unsent events instead of requeueing them; only an empty `usage.lock` remains.
   Deleting server rows is an admin action on request; it's the one exception to append-only, and
   it's logged in the Jira ticket.
-- ASSUMPTION: retention of 13 months, enough for a year-over-year view. A monthly `pg_cron` job
-  (`axis-usage-retention`, migration `20261007200000`) deletes older rows. Confirm with whoever owns creai's privacy notice (LFPDPPP); employee data
-  processing may need a line in the internal privacy notice.
+- ASSUMPTION: retention of 13 months, enough for a year-over-year view. Migration `20261007200000`
+  adds `axis_usage_purge_expired()`, which deletes older rows. It is not scheduled yet, because
+  deletion is permanent and the period is unconfirmed. Once the owner of creai's privacy notice
+  (LFPDPPP) confirms it, a follow-up migration runs it monthly:
+  `create extension if not exists pg_cron;` then
+  `select cron.schedule('axis-usage-retention', '15 3 1 * *', 'select public.axis_usage_purge_expired()');`.
+  The earliest events date from October 2026, so no row can expire before November 2027. Employee
+  data processing may also need a line in the internal privacy notice.
 
 ## Metrics (as the dashboard computes them)
 

@@ -252,7 +252,7 @@ class SmokeTest(FakePsqlCase):
         endpoint, _ = self.serve((200, {}))
         self.assertEqual(self.smoke(endpoint, FAKE_PSQL_STDOUT="0"), 1)  # checks fail against the stub; fine
         sqls = [c["sql"] for c in self.psql_calls()]
-        self.assertTrue(any("cron.job" in q for q in sqls))  # it got as far as the retention checks
+        self.assertTrue(any("set revoked_at = now()" in q for q in sqls))  # it got past the last remote check
         self.assertFalse(any("axis_usage_purge_expired" in q for q in sqls))
         self.assertIn("delete from public.axis_usage_devs", sqls[-1])
 

@@ -58,7 +58,7 @@ The collector and the event contract don't change. What changes is the box behin
 
 | Piece | Now (Supabase) | AWS |
 |---|---|---|
-| Database | Supabase Postgres | Amazon RDS for PostgreSQL (or Aurora PostgreSQL). The tables, views and retention job carry over; a few Supabase-specific parts need changes (see *Migrations on RDS* below). |
+| Database | Supabase Postgres | Amazon RDS for PostgreSQL (or Aurora PostgreSQL). The tables, views and the retention function carry over; a few Supabase-specific parts need changes (see *Migrations on RDS* below). |
 | Ingest | Edge Function (`index.ts` wires `handler.ts` to supabase-js) | Lambda behind API Gateway or a function URL, reusing `handler.ts` unchanged with a `Store` written against Postgres. |
 | Dashboard reads | Browser → Supabase REST, filtered by RLS | A small read API (Lambda) that checks the Entra ID token and returns the same rows; only `liveData()` in `index.html` changes. |
 | Dashboard hosting | nginx container / static host | S3 + CloudFront |
@@ -70,9 +70,10 @@ funnel are SQL and move as they are.
 
 **Migrations on RDS.** Both migrations are written for Supabase. On RDS:
 
-- **pg_cron must be preloaded** before `create extension pg_cron` works: add `pg_cron` to
-  `shared_preload_libraries` in the DB parameter group, reboot, and run the retention migration in the
-  database named by `cron.database_name` (`postgres` unless changed).
+- **pg_cron must be preloaded** for the monthly retention job (a follow-up migration, once the
+  retention period is signed off): add `pg_cron` to `shared_preload_libraries` in the DB parameter
+  group, reboot, and run that migration in the database named by `cron.database_name` (`postgres`
+  unless changed).
 - **The `anon` and `authenticated` roles don't exist.** Both migrations grant or revoke on them. Create
   them first (`create role anon nologin; create role authenticated nologin;`) so the migrations run
   unchanged, or remove those statements.

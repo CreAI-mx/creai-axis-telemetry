@@ -16,7 +16,8 @@ Order is contract-first: the backend accepts events before any dev can send them
 - [ ] `supabase link`, then `supabase db push` to apply `migrations/20261007000000_axis_usage.sql`
 - [ ] `supabase functions deploy ingest` (`verify_jwt = false` is set in `config.toml`)
 - [x] Smoke test on the local stack: a valid token gets 200, a revoked token 401, a duplicate id is accepted and ignored, a bad slug is rejected
-- [x] Monthly `pg_cron` retention job (`20261007200000_axis_usage_retention.sql`)
+- [x] Retention function `axis_usage_purge_expired()` (`20261007200000_axis_usage_retention.sql`), tested by the smoke test
+- [ ] Schedule it monthly with `pg_cron` in a follow-up migration, after the privacy-notice owner confirms the period (design.md, Privacy)
 - [x] Admin script to issue, revoke and list tokens and forget a dev's events (`scripts/axis_admin.py`)
 - [x] Local Docker stack: `scripts/demo-up.sh`, `scripts/demo-down.sh`, smoke test `scripts/smoke_ingest.py`
 - [ ] Stable endpoint name in front of the backend before the pilot (`docs/hosting.md` § Keep the endpoint stable)

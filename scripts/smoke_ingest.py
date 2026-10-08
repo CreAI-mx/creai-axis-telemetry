@@ -197,10 +197,8 @@ def main(argv=None):
         status, _ = post(args.endpoint, token, {"events": [late]})
         check("revoked token: 401, not stored", status == 401 and count(late["id"]) == 0, str(status))
 
-        rows = sql("select count(*) from cron.job where jobname = 'axis-usage-retention';")
-        check("retention job is scheduled", rows == [["1"]], str(rows))
         if env:
-            # Run the job's function: an event older than 13 months goes, a recent one stays. It purges
+            # Run the retention function: an event older than 13 months goes, a recent one stays. It purges
             # every expired row in the database, so it runs only on the local stack, never on shared data.
             sql("update public.axis_usage_devs set revoked_at = null where email = :'email';", email=EMAIL)
             old = event(ts=(datetime.now(timezone.utc) - timedelta(days=430)).isoformat(timespec="seconds"))
