@@ -393,7 +393,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+def _opener_for(endpoint):
+    """Never follows redirects. A loopback endpoint also skips proxies: plain http is only allowed
+    because the request stays on this machine, and http_proxy would send it (and the token) elsewhere.
+    https keeps the environment's proxies, since a corporate proxy only tunnels the encrypted bytes."""
+    loopback = urllib.parse.urlsplit(endpoint).hostname in LOOPBACK_HOSTS
+    proxies = urllib.request.ProxyHandler({} if loopback else None)
+    return urllib.request.build_opener(_NoRedirect, proxies)
 
 
 def post(endpoint, token, events):
@@ -403,7 +409,7 @@ def post(endpoint, token, events):
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
     )
-    with _OPENER.open(req, timeout=HTTP_TIMEOUT_S) as resp:
+    with _opener_for(endpoint).open(req, timeout=HTTP_TIMEOUT_S) as resp:
         return json.loads(resp.read() or b"{}")
 
 

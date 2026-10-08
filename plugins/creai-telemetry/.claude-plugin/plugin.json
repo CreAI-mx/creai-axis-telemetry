@@ -1,6 +1,6 @@
 {
   "name": "creai-telemetry",
-  "version": "0.1.3",
+  "version": "0.1.2",
   "description": "Opt-in creai-axis usage collector. SessionStart/SessionEnd hooks parse local transcripts for creai-axis skill invocations and send metadata-only events to the adoption dashboard. Does nothing until the developer opts in with /creai-telemetry:creai-usage.",
   "author": {
     "name": "Creai",

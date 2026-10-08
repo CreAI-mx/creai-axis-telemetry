@@ -63,7 +63,7 @@ The collector and the event contract don't change. What changes is the box behin
 | Dashboard reads | Browser → Supabase REST, filtered by RLS | A small read API (Lambda) that checks the Entra ID token and returns the same rows; only `liveData()` in `index.html` changes. |
 | Dashboard hosting | nginx container / static host | S3 + CloudFront |
 | Reader sign-in | Supabase Auth | Entra ID directly, or Cognito federated with Entra ID |
-| Admin | `scripts/axis_admin.py` (psql) | The same script with `--db-url` pointing at RDS |
+| Admin | `scripts/axis_admin.py` (psql) | The same script with `AXIS_DB_URL` pointing at RDS |
 
 ASSUMPTION: RDS rather than the DynamoDB option in the design, because the dashboard views and the
 funnel are SQL and move as they are.

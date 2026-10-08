@@ -35,7 +35,7 @@ other plugins.
 Ingest tokens are issued by: **TBD**. Ask in the team channel until this is filled in.
 
 Tokens are issued with `scripts/axis_admin.py` (psql underneath; local Docker stack by default,
-`--db-url` for any other Postgres). Only `sha256(token)` is stored; give the token to the dev privately.
+`AXIS_DB_URL=postgresql://…` for any other Postgres). Only `sha256(token)` is stored; give the token to the dev privately.
 
 ```bash
 python3 scripts/axis_admin.py issue dev@creai.mx "Dev Name" --out /tmp/dev-token   # or re-issue to rotate

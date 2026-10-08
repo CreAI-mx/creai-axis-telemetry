@@ -2,7 +2,7 @@
 """End-to-end smoke test of a running backend: issues a throwaway dev, exercises the ingest
 endpoint and checks what landed in the database, then deletes the dev and its events.
 
-  python3 scripts/smoke_ingest.py [--endpoint URL] [--db-url URL]
+  python3 scripts/smoke_ingest.py [--endpoint URL]   # AXIS_DB_URL selects a non-local database
 
 Defaults to the local Docker stack (scripts/demo-up.sh), where it also checks what dashboard readers
 can see, signing in by magic link through the local mail viewer. Tokens never leave this process.

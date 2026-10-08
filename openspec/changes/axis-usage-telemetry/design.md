@@ -100,6 +100,7 @@ writes one marker file per transcript to `usage-rescan/`, which needs no lock.
   or `::1` (the local Docker stack), so a token never crosses a network in clear text.
   It never follows a redirect: the token would go along to a URL `optin` never checked, so a
   redirect counts as a failed send and the events stay queued.
+  A loopback send also ignores `http_proxy`, which would otherwise carry the clear-text token off the machine.
 
 ## Privacy
 

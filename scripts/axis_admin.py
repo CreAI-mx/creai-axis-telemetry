@@ -2,8 +2,9 @@
 """Admin tasks for the usage backend: issue, revoke and list ingest tokens; forget a dev's events.
 
 Talks plain SQL through psql, so it works the same against the local Docker stack, a hosted
-Supabase project or Amazon RDS. By default it uses the local stack's database container; pass
---db-url (or set AXIS_DB_URL) for any other Postgres.
+Supabase project or Amazon RDS. By default it uses the local stack's database container; set
+AXIS_DB_URL (a postgresql:// URL) for any other Postgres. --db-url works too, but like any argument
+it shows up in `ps`, so prefer the variable when the URL holds a password.
 
 A token is generated here, shown once (or written to a mode-600 file with --out) and only its
 SHA-256 is stored. Never paste a token into a chat, a ticket or a log.
@@ -20,24 +21,43 @@ import secrets
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 LOCAL_DB_CONTAINER = "supabase_db_creai-axis-telemetry"
 
 
+def split_password(db_url):
+    """Return (URL without its password, password or None). The password goes to psql through
+    PGPASSWORD, because psql's arguments are visible to every user on the machine via `ps`."""
+    parts = urllib.parse.urlsplit(db_url)
+    if parts.password is None:
+        return db_url, None
+    netloc = parts.netloc.rsplit("@", 1)[1]
+    if parts.username is not None:
+        netloc = urllib.parse.quote(urllib.parse.unquote(parts.username), safe="") + "@" + netloc
+    return urllib.parse.urlunsplit(parts._replace(netloc=netloc)), urllib.parse.unquote(parts.password)
+
+
 def psql(args, sql, **params):
     """Run `sql` with psql variables (`:'name'` in the SQL), returning unaligned rows."""
     db_url = args.db_url or os.environ.get("AXIS_DB_URL")
+    env = None
     if db_url:
         if not shutil.which("psql"):
             sys.exit("psql is not installed (macOS: brew install libpq).")
+        if "://" not in db_url:
+            sys.exit("Give the database as a postgresql:// URL.")
+        db_url, password = split_password(db_url)
+        if password is not None:
+            env = {**os.environ, "PGPASSWORD": password}
         cmd = ["psql", db_url]
     else:
         cmd = ["docker", "exec", "-i", LOCAL_DB_CONTAINER, "psql", "-U", "postgres", "-d", "postgres"]
     cmd += ["-X", "-q", "-At", "-F", "\t", "-v", "ON_ERROR_STOP=1"]
     for name, value in params.items():
         cmd += ["-v", f"{name}={value}"]
-    proc = subprocess.run(cmd, input=sql, capture_output=True, text=True)
+    proc = subprocess.run(cmd, input=sql, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         sys.exit(proc.stderr.strip() or f"psql exited with {proc.returncode}")
     return [line.split("\t") for line in proc.stdout.splitlines() if line]
@@ -123,7 +143,8 @@ def cmd_list(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="creai-axis usage backend admin")
-    ap.add_argument("--db-url", help="Postgres URL (default: AXIS_DB_URL, else the local Docker stack)")
+    ap.add_argument("--db-url", help="postgresql:// URL (default: AXIS_DB_URL, else the local Docker stack); "
+                                     "visible in `ps`, so prefer AXIS_DB_URL")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("issue", help="issue or rotate a dev's ingest token")
     p.add_argument("email")
