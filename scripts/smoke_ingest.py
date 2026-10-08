@@ -29,6 +29,20 @@ EMAIL = f"smoke-test-{RUN}@creai.mx"
 READER = f"smoke-reader-{RUN}@creai.mx"
 OUTSIDER = f"smoke-outsider-{RUN}@example.com"
 
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # a 30x comes back as an error instead of carrying the Authorization header elsewhere
+
+
+def urlopen(req):
+    """Same rules as the collector: never follow redirects, and keep loopback requests off proxies."""
+    loopback = urllib.parse.urlsplit(req.full_url).hostname in LOOPBACK_HOSTS
+    proxies = urllib.request.ProxyHandler({} if loopback else None)
+    return urllib.request.build_opener(_NoRedirect, proxies).open(req, timeout=10)
+
 
 def post(endpoint, token, body):
     headers = {"Content-Type": "application/json"}
@@ -36,7 +50,7 @@ def post(endpoint, token, body):
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(endpoint, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urlopen(req) as resp:
             return resp.status, json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode(errors="replace")
@@ -47,7 +61,7 @@ def http(method, url, body=None, headers=None):
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", **(headers or {})},
                                  method=method)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urlopen(req) as resp:
             raw = resp.read()
             return resp.status, json.loads(raw) if raw.strip()[:1] in (b"{", b"[") else raw.decode()
     except urllib.error.HTTPError as err:

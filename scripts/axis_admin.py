@@ -89,17 +89,20 @@ def cmd_issue(args):
     if not args.email.lower().endswith("@creai.mx"):
         sys.exit("Only @creai.mx addresses can opt in.")
     token = secrets.token_urlsafe(32)
-    out = open_private(args.out) if args.out else None  # before the database, so a bad path loses nothing
+    out = open_private(args.out) if args.out else None
     try:
+        if out:  # on disk before the database rotates the token, so a failed write never loses the new one
+            with out:
+                out.write(token + "\n")
+                out.flush()
+                os.fsync(out.fileno())
         store_token(args, token)
-    except BaseException:  # psql failures exit; don't leave an empty token file behind
+    except BaseException:  # psql failures exit too; leave no file holding a token that was never stored
         if out:
             out.close()
             os.unlink(args.out)
         raise
     if out:
-        with out:
-            out.write(token + "\n")
         print(f"Token for {args.email} written to {args.out} (mode 600). Hand it over privately, then delete the file.")
     else:
         print(f"Token for {args.email} (shown once; hand it over privately):\n{token}")
