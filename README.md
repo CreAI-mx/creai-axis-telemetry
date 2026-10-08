@@ -53,6 +53,7 @@ python3 scripts/axis_admin.py list
 | `plugins/creai-telemetry/hooks/hooks.json` | `SessionStart` (retry queue) and `SessionEnd` (collect + send) |
 | `plugins/creai-telemetry/skills/creai-usage/SKILL.md` | Opt in, backfill, status, opt out |
 | `tests/collector/` | Collector unit tests |
+| `tests/scripts/` | Tests for the admin and smoke-test scripts (stand-in `psql`, no database) |
 | `supabase/migrations/`, `supabase/functions/ingest/` | Schema, RLS, views; ingest endpoint (`handler.ts` holds the logic and its tests) |
 | `dashboard/index.html`, `dashboard/config.example.js` | Dashboard; demo data until `config.js` exists |
 | `deploy/docker-compose.yml`, `scripts/demo-up.sh`, `scripts/demo-down.sh` | Run everything in Docker on one machine |
@@ -63,6 +64,7 @@ python3 scripts/axis_admin.py list
 
 ```bash
 python3 -m unittest discover -s tests/collector                        # collector tests, stdlib only
+python3 -m unittest discover -s tests/scripts                          # admin and smoke-test scripts
 python3 plugins/creai-telemetry/hooks/usage-collector.py extract ~/.claude/projects/*/*.jsonl   # what would be sent; sends nothing
 deno check supabase/functions/ingest/ && deno test --no-lock supabase/functions/ingest/   # or via npx -y deno
 python3 -m http.server -d dashboard 8000                               # dashboard with demo data

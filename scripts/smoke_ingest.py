@@ -3,15 +3,18 @@
 endpoint and checks what landed in the database, then deletes the dev and its events. Every run
 uses its own throwaway addresses, so runs never touch real devs or each other.
 
-  python3 scripts/smoke_ingest.py [--endpoint URL]   # AXIS_DB_URL selects a non-local database
+  python3 scripts/smoke_ingest.py                                     # the local Docker stack
+  AXIS_DB_URL=postgresql://... python3 scripts/smoke_ingest.py --endpoint https://...   # any other backend
 
-Defaults to the local Docker stack (scripts/demo-up.sh), where it also checks what dashboard readers
-can see, signing in by magic link through the local mail viewer, and runs the retention purge. Against
-any other backend it changes only its own throwaway rows. Tokens never leave this process.
+Locally (scripts/demo-up.sh) it also checks what dashboard readers can see, signing in by magic link
+through the local mail viewer, and runs the retention purge. Against any other backend it changes only
+its own throwaway rows. The endpoint must be https://, or http:// only to this machine, as in the
+collector. Tokens never leave this process.
 """
 import argparse
 import hashlib
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -38,8 +41,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # a 30x comes back as an error instead of carrying the Authorization header elsewhere
 
 
+def endpoint_allowed(url):
+    """The collector's transport rule: https://, or plain http:// only to this machine."""
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK_HOSTS)
+
+
 def urlopen(req):
     """Same rules as the collector: never follow redirects, and keep loopback requests off proxies."""
+    if not endpoint_allowed(req.full_url):
+        raise SystemExit(f"Refusing {req.full_url}: use https://, or http:// only to localhost.")
     loopback = urllib.parse.urlsplit(req.full_url).hostname in LOOPBACK_HOSTS
     proxies = urllib.request.ProxyHandler({} if loopback else None)
     return urllib.request.build_opener(_NoRedirect, proxies).open(req, timeout=10)
@@ -107,6 +118,12 @@ def main(argv=None):
     ap.add_argument("--endpoint")
     args = ap.parse_args(argv)
     args.db_url = None  # only AXIS_DB_URL selects another database: an argument would show its password in `ps`
+    # Local mode (sign-in checks, the purge) needs both the local endpoint and the local database, so a
+    # remote database never meets local-only steps, and the smoke dev is cleaned up where it was created.
+    if bool(args.endpoint) != bool(os.environ.get("AXIS_DB_URL")):
+        sys.exit("Give both --endpoint and AXIS_DB_URL for another backend, or neither for the local stack.")
+    if args.endpoint and not endpoint_allowed(args.endpoint):
+        sys.exit("The endpoint must be an https:// URL (http:// only for localhost).")
     env = None  # the local stack's URLs and keys; None against any other backend
     if not args.endpoint:
         out = subprocess.run(["supabase", "status", "-o", "env"], capture_output=True, text=True, check=True).stdout

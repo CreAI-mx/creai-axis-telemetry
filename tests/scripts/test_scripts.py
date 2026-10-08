@@ -185,9 +185,26 @@ class SmokeTest(FakePsqlCase):
     def smoke(self, endpoint, **env):
         with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
             try:
-                return smoke_ingest.main(["--endpoint", endpoint])
+                return smoke_ingest.main(["--endpoint", endpoint] if endpoint else [])
             except SystemExit as stop:
                 return stop
+
+    def test_smoke_needs_both_endpoint_and_database_or_neither(self):
+        endpoint, sink = self.serve((200, {}))
+        stop = self.smoke(None)  # AXIS_DB_URL is set: a remote database with the local endpoint
+        self.assertIn("Give both", str(stop))
+        with mock.patch.dict(os.environ):
+            del os.environ["AXIS_DB_URL"]
+            stop = self.smoke(endpoint)  # a remote endpoint with the local database
+        self.assertIn("Give both", str(stop))
+        self.assertEqual((self.psql_calls(), sink.hits), ([], []))
+
+    def test_smoke_refuses_plain_http_to_another_machine(self):
+        stop = self.smoke("http://ingest.example.com/functions/v1/ingest")
+        self.assertIn("https://", str(stop))
+        self.assertEqual(self.psql_calls(), [])
+        with self.assertRaises(SystemExit):
+            smoke_ingest.http("GET", "http://ingest.example.com/rest", headers={"Authorization": "Bearer tok"})
 
     def test_smoke_cleans_up_even_when_its_first_insert_reports_a_failure(self):
         endpoint, _ = self.serve((200, {}))

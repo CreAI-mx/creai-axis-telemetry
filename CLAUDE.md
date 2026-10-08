@@ -7,6 +7,7 @@ source of truth.
 
 ## Commands
 - Collector tests: `python3 -m unittest discover -s tests/collector`
+- Script tests: `python3 -m unittest discover -s tests/scripts`
 - Ingest function: `deno check supabase/functions/ingest/` and `deno test --no-lock supabase/functions/ingest/`
 - Dashboard locally: `python3 -m http.server -d dashboard 8000`
 - Whole system in Docker: `scripts/demo-up.sh`, then `python3 scripts/smoke_ingest.py`; stop with `scripts/demo-down.sh` (docs/hosting.md)
