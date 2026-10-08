@@ -199,14 +199,20 @@ def main(argv=None):
 
         if env:
             # Run the retention function: an event older than 13 months goes, a recent one stays. It purges
-            # every expired row in the database, so it runs only on the local stack, never on shared data.
+            # every expired row in the database, so it runs only on the local stack, and inside a
+            # transaction that is rolled back, so no event that was already there is ever deleted.
             sql("update public.axis_usage_devs set revoked_at = null where email = :'email';", email=EMAIL)
             old = event(ts=(datetime.now(timezone.utc) - timedelta(days=430)).isoformat(timespec="seconds"))
             status, body = post(args.endpoint, token, {"events": [old]})
-            purged = sql("select public.axis_usage_purge_expired();")[0][0]
-            check("retention purge deletes only expired events",
-                  status == 200 and count(old["id"]) == 0 and count(good["id"]) == 1 and int(purged) >= 1,
-                  f"{status} {body} purged={purged}")
+            rows = sql("""begin;
+                          select public.axis_usage_purge_expired();
+                          select (select count(*) from public.axis_usage_events where id = :'old'),
+                                 (select count(*) from public.axis_usage_events where id = :'good');
+                          rollback;""", old=old["id"], good=good["id"])
+            purged, inside = rows[0][0], rows[1]  # inside the transaction: [expired left, recent left]
+            check("retention purge deletes only expired events (then rolled back)",
+                  status == 200 and int(purged) >= 1 and inside == ["0", "1"] and count(old["id"]) == 1,
+                  f"{status} {body} purged={purged} inside={inside}")
     finally:
         sql("""delete from public.axis_usage_events where dev_id in (select id from public.axis_usage_devs where email = :'email');
                delete from public.axis_usage_devs where email = :'email';""", email=EMAIL)

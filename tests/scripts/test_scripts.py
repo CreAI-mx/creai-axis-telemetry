@@ -151,6 +151,19 @@ class AdminTest(FakePsqlCase):
         self.assertEqual(call["on_disk"], target.read_text())
         self.assertRegex(call["on_disk"], r"^[A-Za-z0-9_-]{43}\n$")
 
+    def test_the_token_files_folder_is_flushed_before_the_database_rotates_it(self):
+        target = self.tmp / "token"
+        synced, real_fsync = [], os.fsync
+
+        def spy(fd):
+            synced.append((stat.S_ISDIR(os.fstat(fd).st_mode), len(self.psql_calls())))
+            real_fsync(fd)
+
+        with mock.patch("os.fsync", side_effect=spy):
+            self.issue("--out", str(target))
+        self.assertIn((True, 0), synced)  # the folder, before any psql call
+        self.assertIn((False, 0), synced)  # the file, likewise
+
     def test_a_failed_token_write_leaves_the_database_alone(self):
         target = self.tmp / "token"
         with mock.patch("os.fsync", side_effect=OSError("disk full")), self.assertRaises(OSError):

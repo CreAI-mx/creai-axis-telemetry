@@ -5,6 +5,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 supabase start
+
+# The Supabase CLI publishes its ports on every interface unless Docker's default bind address is
+# 127.0.0.1, and this stack runs with default keys and passwords. Refuse to run it open to the network.
+exposed="$(docker ps --filter "label=com.supabase.cli.project=creai-axis-telemetry" --format '{{.Names}} {{.Ports}}' \
+  | grep -E '(0\.0\.0\.0|\[::\]|:::)[0-9]*:' || true)"
+if [ -n "$exposed" ]; then
+  echo "Stopping: these containers are reachable from the network, not only from this machine:" >&2
+  echo "$exposed" >&2
+  echo 'Fix: Docker Desktop > Settings > Docker Engine, add "ip": "127.0.0.1", Apply & restart, then run this again (docs/hosting.md).' >&2
+  supabase stop
+  exit 1
+fi
+
 eval "$(supabase status -o env)"
 mail_url="${MAILPIT_URL:-${INBUCKET_URL:-}}"
 

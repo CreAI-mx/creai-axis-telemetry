@@ -8,10 +8,14 @@ is the runbook for the first and the plan for the second.
 
 `supabase start` runs the whole backend as Docker containers: Postgres with the migrations applied,
 Auth, the REST API, the `ingest` function, Studio and a local mail viewer (Mailpit) for sign-in
-links. `deploy/docker-compose.yml` adds the dashboard as an nginx container. Everything listens on
-`127.0.0.1` only.
+links. `deploy/docker-compose.yml` adds the dashboard as an nginx container. Everything must listen on
+`127.0.0.1` only, because the stack runs with Supabase's default keys and database password.
 
-**Needs:** Docker Desktop running, the Supabase CLI (`brew install supabase/tap/supabase`),
+**Needs:** Docker Desktop running, with its default bind address set to loopback. The Supabase CLI
+publishes its ports on every interface otherwise. In Docker Desktop > Settings > Docker Engine, add
+`"ip": "127.0.0.1"` to the JSON, then Apply & restart. This affects every container on the machine that
+publishes a port without naming an address, which is the safer default anyway. `demo-up.sh` checks this
+and stops the stack if any port is open to the network. Also needed: the Supabase CLI (`brew install supabase/tap/supabase`),
 Python 3.9+. The dashboard loads supabase-js and its font from a CDN, so the machine needs internet.
 
 ```bash

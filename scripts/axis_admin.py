@@ -90,6 +90,18 @@ def open_private(path):
     return os.fdopen(fd, "w")
 
 
+def fsync_dir(path):
+    """Flush a directory's entries to disk, where the platform allows opening a directory (POSIX)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return  # Windows can't open a directory; NTFS journals the entry anyway
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def cmd_issue(args):
     if not EMAIL_RE.fullmatch(args.email):  # before anything is written, so a bad address leaves nothing behind
         sys.exit("Give an address of the form name@creai.mx; only @creai.mx addresses can opt in.")
@@ -101,6 +113,7 @@ def cmd_issue(args):
                 out.write(token + "\n")
                 out.flush()
                 os.fsync(out.fileno())
+            fsync_dir(Path(args.out).resolve().parent)  # the new directory entry must survive a crash too
         except BaseException:
             os.unlink(args.out)  # nothing was stored, so this half-written file holds nothing of use
             raise
