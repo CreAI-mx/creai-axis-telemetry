@@ -38,16 +38,18 @@ def split_password(db_url):
         netloc = netloc.rsplit("@", 1)[1]
         if parts.username is not None:
             netloc = urllib.parse.quote(urllib.parse.unquote(parts.username), safe="") + "@" + netloc
-    query = []
-    for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
-        if key == "password":
-            password = value
+    # libpq percent-decodes URI parameters but, unlike HTML forms, keeps `+` literal: so no parse_qsl,
+    # and every other parameter stays exactly as written.
+    kept = []
+    for item in parts.query.split("&") if parts.query else []:
+        key, _, value = item.partition("=")
+        if urllib.parse.unquote(key) == "password":
+            password = urllib.parse.unquote(value)
         else:
-            query.append((key, value))
+            kept.append(item)
     if password is None:
         return db_url, None
-    query = urllib.parse.urlencode(query, quote_via=urllib.parse.quote)
-    return urllib.parse.urlunsplit(parts._replace(netloc=netloc, query=query)), password
+    return urllib.parse.urlunsplit(parts._replace(netloc=netloc, query="&".join(kept))), password
 
 
 def psql(args, sql, **params):

@@ -1,5 +1,6 @@
 """Tests for scripts/axis_admin.py (with a stand-in psql, so no database is needed) and the\nsmoke test's HTTP rules."""
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -32,6 +33,14 @@ print(os.environ.get("FAKE_PSQL_STDOUT", ""))
 sys.exit(int(os.environ.get("FAKE_PSQL_RC", "0")))
 """
 
+
+
+def _load_collector():
+    path = Path(__file__).resolve().parents[2] / "plugins" / "creai-telemetry" / "hooks" / "usage-collector.py"
+    spec = importlib.util.spec_from_file_location("usage_collector", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 class FakePsqlCase(unittest.TestCase):
     """AXIS_DB_URL points at a remote database, and psql is a stand-in that logs each call."""
@@ -113,6 +122,11 @@ class AdminTest(FakePsqlCase):
         self.assertEqual(call["password"], "se&cr=et")
         self.assertNotIn("se%26cr", " ".join(call["argv"]))
         self.assertIn("postgresql://admin@db.example.com/postgres?sslmode=require&application_name=a%20b", call["argv"])
+
+    def test_plus_signs_in_the_query_string_stay_literal(self):
+        url = "postgresql://admin@db/postgres?password=a+b%2Bc&application_name=x+y&options=-c%20a%3Db"
+        self.assertEqual(axis_admin.split_password(url),
+                         ("postgresql://admin@db/postgres?application_name=x+y&options=-c%20a%3Db", "a+b+c"))
 
     def test_urls_without_a_password_pass_through_unchanged(self):
         for url in ("postgresql://admin@db.example.com/postgres?sslmode=require", "postgresql:///postgres"):
@@ -198,6 +212,16 @@ class SmokeTest(FakePsqlCase):
             stop = self.smoke(endpoint)  # a remote endpoint with the local database
         self.assertIn("Give both", str(stop))
         self.assertEqual((self.psql_calls(), sink.hits), ([], []))
+
+    def test_smoke_endpoint_rule_matches_the_collector(self):
+        collector = _load_collector()
+        urls = ["https://ingest.example/x", "https:///x", "https://", "http://[::1/x", "https://[::1/x",
+                "http://user:pw@127.0.0.1:54321/x", "http://127.0.0.1:54321/x", "http://[::1]:54321/x",
+                "http://localhost/x", "http://ingest.example/x", "ftp://127.0.0.1/x", "127.0.0.1:54321"]
+        for url in urls:
+            self.assertEqual(smoke_ingest.endpoint_allowed(url), collector.endpoint_allowed(url), url)
+        self.assertIn("https://", str(self.smoke("https:///functions/v1/ingest")))
+        self.assertEqual(self.psql_calls(), [])
 
     def test_smoke_refuses_plain_http_to_another_machine(self):
         stop = self.smoke("http://ingest.example.com/functions/v1/ingest")

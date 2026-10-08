@@ -42,9 +42,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def endpoint_allowed(url):
-    """The collector's transport rule: https://, or plain http:// only to this machine."""
-    parts = urllib.parse.urlsplit(url)
-    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK_HOSTS)
+    """The collector's transport rule (usage-collector.py endpoint_allowed): https:// to a named host,
+    or plain http:// only to this machine, with no credentials in the URL."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return False
+    if parts.scheme == "https":
+        return bool(host)
+    return parts.scheme == "http" and host in LOOPBACK_HOSTS and "@" not in parts.netloc
 
 
 def urlopen(req):

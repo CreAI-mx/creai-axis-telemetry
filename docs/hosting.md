@@ -77,11 +77,41 @@ funnel are SQL and move as they are.
   them first (`create role anon nologin; create role authenticated nologin;`) so the migrations run
   unchanged, or remove those statements.
 - **`auth.jwt()` doesn't exist**, and the RLS policies and `is_creai_reader()` call it. Leave out
-  `is_creai_reader()` and the policies that use it. The browser no longer reaches the database: the read
-  API checks the Entra ID token and connects as its own role, granted `select` on the
-  `axis_usage_v_*` views. ASSUMPTION: the read API is the only reader, as in the table above.
-- The ingest Lambda's role needs `select` on `axis_usage_devs` and `insert` on `axis_usage_events`, the
-  same rights the Edge Function's service role uses now.
+  `is_creai_reader()` and the three `*_read` policies. RLS stays on, so with no policy every role is
+  denied. The browser no longer reaches the database. Instead, two backend roles get explicit rights
+  plus their own policies. The read API checks the Entra ID token and connects as `axis_reader`.
+  ASSUMPTION: the read API is the only reader, as in the table above. The views run as the caller
+  (`security_invoker`), so `axis_reader` needs the tables under them as well as the views.
+
+```sql
+-- Two login roles; their passwords live in AWS Secrets Manager, never in a migration.
+create role axis_ingest login;
+create role axis_reader login;
+grant usage on schema public to axis_ingest, axis_reader;
+
+-- Ingest Lambda: look up a token, append events. RLS stays on, so each right also needs a policy.
+grant select (id, revoked_at, token_hash) on public.axis_usage_devs to axis_ingest;
+grant insert on public.axis_usage_events to axis_ingest;
+create policy devs_ingest on public.axis_usage_devs for select to axis_ingest using (true);
+create policy events_ingest on public.axis_usage_events for insert to axis_ingest with check (true);
+
+-- Read API: the views run as the caller (security_invoker), so it needs the tables underneath too.
+-- Never token_hash.
+grant select (id, email, display_name, github_login, opted_in_at, revoked_at)
+  on public.axis_usage_devs to axis_reader;
+grant select on public.axis_usage_events, public.axis_usage_pipeline_steps to axis_reader;
+grant select on public.axis_usage_v_events, public.axis_usage_v_weekly, public.axis_usage_v_dev_skill_30d,
+                public.axis_usage_v_funnel_30d, public.axis_usage_v_devs to axis_reader;
+create policy devs_reader on public.axis_usage_devs for select to axis_reader using (true);
+create policy events_reader on public.axis_usage_events for select to axis_reader using (true);
+create policy steps_reader on public.axis_usage_pipeline_steps for select to axis_reader using (true);
+```
+
+The ingest Lambda's `Store` writes `insert … on conflict do nothing` with no conflict column: that
+needs only `insert`. Naming the column (`on conflict (id)`, as supabase-js does) would also need
+`select` on the events table. This block was checked on the local stack, acting as each role: the
+ingest role finds a token and adds an event, but can't read or delete events. The reader role reads
+all five views, but can't read `token_hash` or write anything.
 
 **Moving data.** Copy two tables; nothing else holds state. The dump holds named usage data and
 token hashes, so keep it owner-only and delete it after the import. Keep passwords off the command
