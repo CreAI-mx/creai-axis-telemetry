@@ -315,7 +315,13 @@
       if (!/@creai\.mx$/.test(email)) { msg.textContent = "Solo cuentas @creai.mx."; return; }
       msg.textContent = "Enviando…";
       const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
-      if (error) { msg.textContent = "No se pudo enviar el enlace: " + error.message; return; }
+      if (error) {
+        console.error("signInWithOtp", error);  // details for whoever debugs; the page stays in Spanish
+        msg.textContent = error.status === 429
+          ? "Se pidieron demasiados enlaces. Espera un minuto e inténtalo de nuevo."
+          : "No se pudo enviar el enlace. Inténtalo de nuevo en un momento.";
+        return;
+      }
       msg.textContent = "Listo. Abre el enlace que llegó a " + email + ".";
       if (cfg.mailViewerUrl) {
         const a = Object.assign(document.createElement("a"), { href: cfg.mailViewerUrl, target: "_blank", rel: "noopener", textContent: "Abrir el correo local" });
@@ -553,7 +559,7 @@
 
   async function boot() {
     const cfg = window.AXIS_USAGE_CONFIG;
-    let failure = null;
+    let failure = false;
     if (cfg && cfg.supabaseUrl && window.supabase) {
       try {
         const live = await liveData(cfg);
@@ -561,12 +567,13 @@
         Object.assign(state, live, { demo: false });
         return render();
       } catch (err) {
-        failure = err.message || String(err);
+        console.error("liveData", err);
+        failure = true;
       }
     }
     Object.assign(state, demoData(), { demo: true });
     render();
-    if (failure) $("demo").textContent = "No se pudo leer Supabase (" + failure + "). Se muestran datos de demostración.";
+    if (failure) $("demo").textContent = "No se pudieron leer los datos reales. Se muestran datos de demostración.";
   }
   boot();
 })();

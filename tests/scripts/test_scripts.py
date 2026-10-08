@@ -80,11 +80,14 @@ class AdminTest(unittest.TestCase):
         self.assertEqual(victim.read_text(), "keep\n")
         self.assertEqual(self.psql_calls(), [])
 
-    def test_a_failed_database_write_leaves_no_token_file(self):
+    def test_a_failed_database_write_keeps_the_token_file(self):
+        # psql can fail after the rotation committed, so the file may hold the only working token.
         target = self.tmp / "token"
-        with mock.patch.dict(os.environ, {"FAKE_PSQL_RC": "1"}), self.assertRaises(SystemExit):
+        with mock.patch.dict(os.environ, {"FAKE_PSQL_RC": "1"}), self.assertRaises(SystemExit) as caught:
             self.issue("--out", str(target))
-        self.assertFalse(target.exists())
+        self.assertIn("outcome is unknown", str(caught.exception))
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        self.assertRegex(target.read_text(), r"^[A-Za-z0-9_-]{43}\n$")
 
     def test_the_database_password_goes_through_the_environment_not_argv(self):
         self.issue("--out", str(self.tmp / "token"))

@@ -90,18 +90,25 @@ def cmd_issue(args):
         sys.exit("Only @creai.mx addresses can opt in.")
     token = secrets.token_urlsafe(32)
     out = open_private(args.out) if args.out else None
-    try:
-        if out:  # on disk before the database rotates the token, so a failed write never loses the new one
+    if out:  # on disk before the database rotates the token, so a failed write never loses the new one
+        try:
             with out:
                 out.write(token + "\n")
                 out.flush()
                 os.fsync(out.fileno())
+        except BaseException:
+            os.unlink(args.out)  # nothing was stored, so this half-written file holds nothing of use
+            raise
+    try:
         store_token(args, token)
-    except BaseException:  # psql failures exit too; leave no file holding a token that was never stored
-        if out:
-            out.close()
-            os.unlink(args.out)
-        raise
+    except SystemExit as failed:
+        if not out:
+            raise
+        # The rotation may have committed even though psql reported a failure (say, the connection
+        # dropped before the acknowledgement), so the file may hold the only working token. Keep it.
+        sys.exit(f"{failed.code}\nThe database update failed or its outcome is unknown. The new token is kept in "
+                 f"{args.out} (mode 600): check with `list` whether it was stored, then delete the file and re-issue "
+                 "if needed.")
     if out:
         print(f"Token for {args.email} written to {args.out} (mode 600). Hand it over privately, then delete the file.")
     else:
