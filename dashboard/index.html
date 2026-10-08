@@ -9,46 +9,24 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
 <style>
   /* Layout: summary row of four tiles, then trend + funnel side by side, then skills + heatmap, then the dev table.
-     CreAI design system (blues 50-800, brand 600, Inter 400/600) — same tokens as creai-arch/assets/dashboard-template.html.
-     Every chart is one hue: the DS has no second hue that passes CVD/contrast checks in dark mode. */
+     "Creai Noir": dark only. Creai Design System near-black (#0A0A0A) with Creai blue as the single accent.
+     Every chart is one hue; the heatmap scale passes the dataviz ordinal checks against --surface. */
   :root{
-    --blue-50:#E6F3FF; --blue-100:#BADBFF; --blue-200:#91C3FF; --blue-300:#69A7FF;
-    --blue-400:#3D84F5; --blue-500:#155EE8; --blue-600:#0843C2; --blue-700:#002C9C; --blue-800:#001D75;
-    --brand:var(--blue-600);
-    --text-primary:#000000; --text-secondary:rgba(0,0,0,.55);
-    --page:#FFFFFF; --surface:var(--blue-50); --line:var(--blue-100); --line-strong:var(--blue-200);
-    --chip-ink:var(--blue-800); --grid:rgba(8,67,194,.12); --track:rgba(8,67,194,.08);
-    --mark:var(--blue-600);
-    --heat-1:#69A7FF; --heat-2:#3D84F5; --heat-3:#155EE8; --heat-4:#0843C2; --heat-5:#002C9C; --heat-ink-dark:#FFFFFF; --heat-ink-light:#001D75;
-    --status-ok:#0F7B34; --status-partial:#B45309; --ok-wash:rgba(15,123,52,.10); --partial-wash:rgba(180,83,9,.12);
-    --tooltip-bg:#001D75; --tooltip-ink:#FFFFFF;
+    color-scheme:dark;
+    --page:#0A0A0A; --surface:#141416; --line:rgba(255,255,255,.08); --line-strong:rgba(255,255,255,.14);
+    --text-primary:#EDEDEF; --text-secondary:#A1A1AA;
+    --brand:#4C8BFF; --on-brand:#0A0A0A; --mark:var(--brand);
+    --grid:rgba(255,255,255,.07); --track:rgba(255,255,255,.05);
+    --heat-1:#2C5BC0; --heat-2:#3D74EC; --heat-3:#6D99FF; --heat-4:#9FBDFF; --heat-5:#D2E0FF;
+    --heat-ink-dark:#0A0A0A; --heat-ink-light:#EDEDEF;
+    --status-ok:#3FBF6A; --status-partial:#F0A93B; --ok-wash:rgba(63,191,106,.13); --partial-wash:rgba(240,169,59,.14);
+    --tooltip-bg:#EDEDEF; --tooltip-ink:#0A0A0A;
     --font-sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     --radius:12px; --radius-sm:8px;
   }
-  @media (prefers-color-scheme: dark){
-    :root:not([data-theme="light"]){
-      --text-primary:#FFFFFF; --text-secondary:rgba(255,255,255,.6);
-      --page:#001344; --surface:var(--blue-800); --line:var(--blue-700); --line-strong:var(--blue-600);
-      --brand:var(--blue-400); --chip-ink:var(--blue-100); --grid:rgba(186,219,255,.14); --track:rgba(186,219,255,.08);
-      --mark:var(--blue-400);
-      --heat-1:#155EE8; --heat-2:#3D84F5; --heat-3:#69A7FF; --heat-4:#91C3FF; --heat-5:#BADBFF; --heat-ink-dark:#001344; --heat-ink-light:#FFFFFF;
-      --status-ok:#3FBF6A; --status-partial:#F0A93B; --ok-wash:rgba(63,191,106,.14); --partial-wash:rgba(240,169,59,.16);
-      --tooltip-bg:#E6F3FF; --tooltip-ink:#001344;
-      color-scheme:dark;
-    }
-  }
-  :root[data-theme="dark"]{
-    --text-primary:#FFFFFF; --text-secondary:rgba(255,255,255,.6);
-    --page:#001344; --surface:var(--blue-800); --line:var(--blue-700); --line-strong:var(--blue-600);
-    --brand:var(--blue-400); --chip-ink:var(--blue-100); --grid:rgba(186,219,255,.14); --track:rgba(186,219,255,.08);
-    --mark:var(--blue-400);
-    --heat-1:#155EE8; --heat-2:#3D84F5; --heat-3:#69A7FF; --heat-4:#91C3FF; --heat-5:#BADBFF; --heat-ink-dark:#001344; --heat-ink-light:#FFFFFF;
-    --status-ok:#3FBF6A; --status-partial:#F0A93B; --ok-wash:rgba(63,191,106,.14); --partial-wash:rgba(240,169,59,.16);
-    --tooltip-bg:#E6F3FF; --tooltip-ink:#001344;
-    color-scheme:dark;
-  }
 
   *{box-sizing:border-box}
+  [hidden]{display:none !important}  /* .signin and others set display, which would beat the attribute */
   body{margin:0; background:var(--page); color:var(--text-primary); font-family:var(--font-sans);
        font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased}
   .wrap{max-width:1180px; margin:0 auto; padding-inline:16px; padding-block:2rem 4rem}
@@ -65,16 +43,14 @@
   .brandline{display:flex; align-items:center; gap:.6rem}
   .dot{width:9px; height:9px; border-radius:50%; background:var(--brand); flex:none}
   .meta{display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.6rem}
-  .chip{font-size:.76rem; padding:.2rem .6rem; border-radius:999px; background:var(--surface);
-        border:1px solid var(--line); color:var(--chip-ink); white-space:nowrap}
+  .chip{font-size:.76rem; padding:.2rem .6rem; border-radius:999px;
+        border:1px solid var(--line-strong); color:var(--text-secondary); white-space:nowrap}
   .chip.demo{border-color:var(--status-partial); color:var(--status-partial); background:var(--partial-wash)}
 
-  .seg{display:inline-flex; border:1px solid var(--line-strong); border-radius:999px; padding:3px; gap:2px}
-  .seg button{font:inherit; font-size:.82rem; border:0; background:transparent; color:var(--text-primary);
+  .seg{display:inline-flex; border:1px solid var(--line-strong); border-radius:999px; padding:3px; gap:2px; background:var(--surface)}
+  .seg button{font:inherit; font-size:.82rem; border:0; background:transparent; color:var(--text-secondary);
               padding:.3rem .8rem; border-radius:999px; cursor:pointer}
-  .seg button[aria-pressed="true"]{background:var(--brand); color:#FFFFFF}
-  :root[data-theme="dark"] .seg button[aria-pressed="true"]{color:#001344}
-  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .seg button[aria-pressed="true"]{color:#001344} }
+  .seg button[aria-pressed="true"]{background:var(--brand); color:var(--on-brand); font-weight:600}
   .seg button:focus-visible, .cell:focus-visible, .hbar:focus-visible, .col:focus-visible{outline:2px solid var(--brand); outline-offset:2px}
 
   .tiles{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1rem; margin-bottom:1.25rem}
@@ -82,7 +58,7 @@
   @media (max-width:440px){ .tiles{grid-template-columns:1fr} }
   .tile{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:1rem 1.1rem;
         display:flex; flex-direction:column; gap:.3rem; min-width:0}
-  .tile .big{font-size:2.1rem; font-weight:600; line-height:1.1; color:var(--brand); letter-spacing:-.02em}
+  .tile .big{font-size:2.1rem; font-weight:600; line-height:1.1; color:var(--text-primary); letter-spacing:-.02em}
   .tile .of{font-size:1rem; color:var(--text-secondary); font-weight:400}
   .delta{font-size:.8rem; color:var(--text-secondary)}
   .delta.up{color:var(--status-ok)} .delta.down{color:var(--status-partial)}
@@ -90,7 +66,7 @@
   .grid2{display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr); gap:1rem; margin-bottom:1rem}
   .grid2.even{grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start}
   @media (max-width:860px){ .grid2, .grid2.even{grid-template-columns:1fr} }
-  .panel{border:1px solid var(--line); border-radius:var(--radius); padding:1.1rem 1.2rem 1.2rem; min-width:0}
+  .panel{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:1.1rem 1.2rem 1.2rem; min-width:0}
   .panel-head{display:flex; justify-content:space-between; align-items:baseline; gap:.75rem; flex-wrap:wrap; margin-bottom:1rem}
 
   /* Magic-link sign-in (authProvider "email"): only the header and this panel show until there is a session. */
@@ -100,9 +76,7 @@
   .signin input{font:inherit; flex:1 1 14rem; min-width:0; padding:.45rem .7rem; border-radius:var(--radius-sm);
                 border:1px solid var(--line-strong); background:var(--page); color:var(--text-primary)}
   .signin button{font:inherit; font-weight:600; padding:.45rem 1rem; border:0; border-radius:var(--radius-sm);
-                 background:var(--brand); color:#FFFFFF; cursor:pointer}
-  :root[data-theme="dark"] .signin button{color:#001344}
-  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .signin button{color:#001344} }
+                 background:var(--brand); color:var(--on-brand); cursor:pointer}
   .signin input:focus-visible, .signin button:focus-visible{outline:2px solid var(--brand); outline-offset:2px}
   .signin a{color:var(--brand)}
 
