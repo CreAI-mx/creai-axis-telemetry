@@ -43,10 +43,25 @@ def psql(args, sql, **params):
     return [line.split("\t") for line in proc.stdout.splitlines() if line]
 
 
+def open_private(path):
+    """Open `path` for writing, readable by the owner only, even if it already existed with a wider mode."""
+    fd = os.open(Path(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)  # O_CREAT's mode applies only to a new file
+        else:
+            os.chmod(path, 0o600)
+    except OSError:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "w")
+
+
 def cmd_issue(args):
     if not args.email.lower().endswith("@creai.mx"):
         sys.exit("Only @creai.mx addresses can opt in.")
     token = secrets.token_urlsafe(32)
+    out = open_private(args.out) if args.out else None  # before the database, so a bad path loses nothing
     # Re-issuing rotates the token: the old one stops working at once, and a revoked dev is reinstated.
     psql(args, """
         insert into public.axis_usage_devs (email, display_name, github_login, token_hash)
@@ -58,12 +73,10 @@ def cmd_issue(args):
               revoked_at = null;
         """, email=args.email, name=args.name, github=args.github or "",
          hash=hashlib.sha256(token.encode()).hexdigest())
-    if args.out:
-        out = Path(args.out)
-        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(token + "\n")
-        print(f"Token for {args.email} written to {out} (mode 600). Hand it over privately, then delete the file.")
+    if out:
+        with out:
+            out.write(token + "\n")
+        print(f"Token for {args.email} written to {args.out} (mode 600). Hand it over privately, then delete the file.")
     else:
         print(f"Token for {args.email} (shown once; hand it over privately):\n{token}")
     return 0

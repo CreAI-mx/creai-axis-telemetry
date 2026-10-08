@@ -385,6 +385,17 @@ def collect(paths, index, deadline=None):
     return len(queued)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib would follow a redirect with the Authorization header, carrying the token to a URL
+    `optin` never checked (possibly plain http elsewhere). A redirect is a failed send instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def post(endpoint, token, events):
     req = urllib.request.Request(
         endpoint,
@@ -392,7 +403,7 @@ def post(endpoint, token, events):
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
+    with _OPENER.open(req, timeout=HTTP_TIMEOUT_S) as resp:
         return json.loads(resp.read() or b"{}")
 
 

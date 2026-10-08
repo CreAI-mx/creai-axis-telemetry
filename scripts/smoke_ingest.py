@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import axis_admin
 
@@ -157,6 +157,15 @@ def main(argv=None):
 
         rows = sql("select count(*) from cron.job where jobname = 'axis-usage-retention';")
         check("retention job is scheduled", rows == [["1"]], str(rows))
+        # Run the job's function: an event older than 13 months goes, a recent one stays. It purges every
+        # expired row, which is exactly what the scheduled job would do anyway.
+        sql("update public.axis_usage_devs set revoked_at = null where email = :'email';", email=EMAIL)
+        old = event(ts=(datetime.now(timezone.utc) - timedelta(days=430)).isoformat(timespec="seconds"))
+        status, body = post(args.endpoint, token, {"events": [old]})
+        purged = sql("select public.axis_usage_purge_expired();")[0][0]
+        check("retention purge deletes only expired events",
+              status == 200 and count(old["id"]) == 0 and count(good["id"]) == 1 and int(purged) >= 1,
+              f"{status} {body} purged={purged}")
     finally:
         sql("""delete from public.axis_usage_events where dev_id in (select id from public.axis_usage_devs where email = :'email');
                delete from public.axis_usage_devs where email = :'email';

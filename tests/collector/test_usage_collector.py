@@ -45,13 +45,25 @@ def rec_skill(tool_id, skill):
 class Sink(BaseHTTPRequestHandler):
     received = []
     status = 200
+    redirect_to = None
 
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Sink.received.append((self.headers["Authorization"], body))
+        if Sink.redirect_to:
+            self.send_response(302)
+            self.send_header("Location", Sink.redirect_to)
+            self.end_headers()
+            return
         self.send_response(Sink.status)
         self.end_headers()
         self.wfile.write(b'{"accepted": 1}')
+
+    def do_GET(self):  # noqa: N802 - only reached by following a redirect
+        Sink.received.append((self.headers["Authorization"], None))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"{}")
 
     def log_message(self, *args):
         pass
@@ -73,7 +85,7 @@ class CollectorTest(unittest.TestCase):
         self.mod = load_collector(self.tmp / "state", self.claude)
         self.transcript = self.claude / "projects" / "-home-dev-agrizar" / "s1.jsonl"
         self.transcript.parent.mkdir(parents=True)
-        Sink.received, Sink.status = [], 200
+        Sink.received, Sink.status, Sink.redirect_to = [], 200, None
 
     def write_records(self, *records, partial=None):
         with open(self.transcript, "a", encoding="utf-8") as fh:
@@ -169,6 +181,16 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(auth, f"Bearer {TOKEN}")
         self.assertEqual(sorted(e["skill"] for e in body["events"]), ["creai-create-pr", "creai-implement"])
         self.assertEqual(self.mod.pending_count(), 0)
+
+    def test_send_never_follows_a_redirect_with_the_token(self):
+        endpoint = self.start_sink()
+        Sink.redirect_to = endpoint + "/elsewhere"
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN})
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+        self.assertEqual(len(Sink.received), 1)  # the POST itself; the redirect target is never requested
+        self.assertEqual(self.mod.read_json(self.mod.LAST_SEND_FILE, {})["error"], "302")
+        self.assertEqual(self.mod.pending_count(), 1)
 
     def test_failed_send_keeps_events_queued_for_next_session(self):
         endpoint = self.start_sink()

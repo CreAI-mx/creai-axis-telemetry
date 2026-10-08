@@ -98,6 +98,8 @@ writes one marker file per transcript to `usage-rescan/`, which needs no lock.
 - Deploy the function with `--no-verify-jwt`, since it authenticates with its own token.
 - The collector only sends to `https://` endpoints, except plain `http://` to `localhost`, `127.0.0.1`
   or `::1` (the local Docker stack), so a token never crosses a network in clear text.
+  It never follows a redirect: the token would go along to a URL `optin` never checked, so a
+  redirect counts as a failed send and the events stay queued.
 
 ## Privacy
 
