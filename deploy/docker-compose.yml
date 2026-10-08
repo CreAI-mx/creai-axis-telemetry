@@ -1,0 +1,12 @@
+# Dashboard for the local Docker deployment (docs/hosting.md). The backend runs next to it
+# through `supabase start`; scripts/demo-up.sh starts both and writes dashboard/config.js.
+name: creai-axis-telemetry
+
+services:
+  dashboard:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ../dashboard:/usr/share/nginx/html:ro
+    restart: unless-stopped

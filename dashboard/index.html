@@ -93,6 +93,19 @@
   .panel{border:1px solid var(--line); border-radius:var(--radius); padding:1.1rem 1.2rem 1.2rem; min-width:0}
   .panel-head{display:flex; justify-content:space-between; align-items:baseline; gap:.75rem; flex-wrap:wrap; margin-bottom:1rem}
 
+  /* Magic-link sign-in (authProvider "email"): only the header and this panel show until there is a session. */
+  body.gated .wrap > :not(header):not(#signin), body.gated .seg{display:none}
+  .signin{max-width:28rem; display:flex; flex-direction:column; gap:.75rem}
+  .signin form{display:flex; flex-wrap:wrap; gap:.5rem; align-items:center}
+  .signin input{font:inherit; flex:1 1 14rem; min-width:0; padding:.45rem .7rem; border-radius:var(--radius-sm);
+                border:1px solid var(--line-strong); background:var(--page); color:var(--text-primary)}
+  .signin button{font:inherit; font-weight:600; padding:.45rem 1rem; border:0; border-radius:var(--radius-sm);
+                 background:var(--brand); color:#FFFFFF; cursor:pointer}
+  :root[data-theme="dark"] .signin button{color:#001344}
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .signin button{color:#001344} }
+  .signin input:focus-visible, .signin button:focus-visible{outline:2px solid var(--brand); outline-offset:2px}
+  .signin a{color:var(--brand)}
+
   /* weekly columns */
   .cols{position:relative; height:200px; margin-left:2rem; display:flex; align-items:flex-end; gap:6px; border-bottom:1px solid var(--line-strong)}
   .gridline{position:absolute; left:0; right:0; border-top:1px dashed var(--grid)}
@@ -165,6 +178,16 @@
       <button type="button" id="p90" data-days="90" aria-pressed="false">90 días</button>
     </div>
   </header>
+
+  <section class="panel signin" id="signin" hidden>
+    <h2>Inicia sesión</h2>
+    <p class="sub" style="margin:0">Entra con tu correo @creai.mx. Te enviamos un enlace de acceso; no hay contraseña.</p>
+    <form id="signin-form">
+      <input id="signin-email" type="email" required autocomplete="email" placeholder="nombre@creai.mx" aria-label="Correo">
+      <button type="submit">Enviar enlace</button>
+    </form>
+    <p class="sub" id="signin-msg" role="status" style="margin:0"></p>
+  </section>
 
   <section class="tiles" aria-label="Resumen del periodo">
     <div class="tile"><span class="label">Devs activos</span><span class="big num" id="k-active"></span><span class="delta" id="k-active-d"></span></div>
@@ -280,11 +303,39 @@
   }
 
   // ---------- live data ----------
+  // Magic-link sign-in. Row Level Security admits only @creai.mx; the check here just saves a wasted email.
+  function showSignIn(client, cfg) {
+    document.body.classList.add("gated");
+    $("signin").hidden = false;
+    $("asof").textContent = "Inicia sesión para ver los datos";
+    $("signin-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const email = $("signin-email").value.trim().toLowerCase();
+      const msg = $("signin-msg");
+      if (!/@creai\.mx$/.test(email)) { msg.textContent = "Solo cuentas @creai.mx."; return; }
+      msg.textContent = "Enviando…";
+      const { error } = await client.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+      if (error) {
+        console.error("signInWithOtp", error);  // details for whoever debugs; the page stays in Spanish
+        msg.textContent = error.status === 429
+          ? "Se pidieron demasiados enlaces. Espera un minuto e inténtalo de nuevo."
+          : "No se pudo enviar el enlace. Inténtalo de nuevo en un momento.";
+        return;
+      }
+      msg.textContent = "Listo. Abre el enlace que llegó a " + email + ".";
+      if (cfg.mailViewerUrl) {
+        const a = Object.assign(document.createElement("a"), { href: cfg.mailViewerUrl, target: "_blank", rel: "noopener", textContent: "Abrir el correo local" });
+        msg.append(" ", a);
+      }
+    });
+  }
+
   async function liveData(cfg) {
     const client = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
     const { data: { session } } = await client.auth.getSession();
     if (!session) {
-      await client.auth.signInWithOAuth({ provider: cfg.authProvider || "azure", options: { redirectTo: location.href, scopes: "email" } });
+      if (cfg.authProvider === "email") showSignIn(client, cfg);
+      else await client.auth.signInWithOAuth({ provider: cfg.authProvider || "azure", options: { redirectTo: location.href, scopes: "email" } });
       return null;
     }
     const since = new Date(Date.now() - 91 * DAY).toISOString();
@@ -508,7 +559,7 @@
 
   async function boot() {
     const cfg = window.AXIS_USAGE_CONFIG;
-    let failure = null;
+    let failure = false;
     if (cfg && cfg.supabaseUrl && window.supabase) {
       try {
         const live = await liveData(cfg);
@@ -516,12 +567,13 @@
         Object.assign(state, live, { demo: false });
         return render();
       } catch (err) {
-        failure = err.message || String(err);
+        console.error("liveData", err);
+        failure = true;
       }
     }
     Object.assign(state, demoData(), { demo: true });
     render();
-    if (failure) $("demo").textContent = "No se pudo leer Supabase (" + failure + "). Se muestran datos de demostración.";
+    if (failure) $("demo").textContent = "No se pudieron leer los datos reales. Se muestran datos de demostración.";
   }
   boot();
 })();

@@ -34,8 +34,15 @@ other plugins.
 <!-- ASSUMPTION: owner not named yet; see tasks.md § 0 -->
 Ingest tokens are issued by: **TBD**. Ask in the team channel until this is filled in.
 
-Issuing a token in v1 means inserting into `axis_usage_devs` the email, display name and
-`sha256(token)`, then giving the token to the dev privately. Revoking means setting `revoked_at`.
+Tokens are issued with `scripts/axis_admin.py` (psql underneath; local Docker stack by default,
+`AXIS_DB_URL=postgresql://…` for any other Postgres). Only `sha256(token)` is stored; give the token to the dev privately.
+
+```bash
+python3 scripts/axis_admin.py issue dev@creai.mx "Dev Name" --out ~/dev-token   # new file, mode 600; re-issue to rotate
+python3 scripts/axis_admin.py revoke dev@creai.mx
+python3 scripts/axis_admin.py forget dev@creai.mx   # deletes their events on request
+python3 scripts/axis_admin.py list
+```
 
 ## Layout
 
@@ -46,13 +53,18 @@ Issuing a token in v1 means inserting into `axis_usage_devs` the email, display 
 | `plugins/creai-telemetry/hooks/hooks.json` | `SessionStart` (retry queue) and `SessionEnd` (collect + send) |
 | `plugins/creai-telemetry/skills/creai-usage/SKILL.md` | Opt in, backfill, status, opt out |
 | `tests/collector/` | Collector unit tests |
+| `tests/scripts/` | Tests for the admin and smoke-test scripts (stand-in `psql`, no database) |
 | `supabase/migrations/`, `supabase/functions/ingest/` | Schema, RLS, views; ingest endpoint (`handler.ts` holds the logic and its tests) |
 | `dashboard/index.html`, `dashboard/config.example.js` | Dashboard; demo data until `config.js` exists |
+| `deploy/docker-compose.yml`, `scripts/demo-up.sh`, `scripts/demo-down.sh` | Run everything in Docker on one machine |
+| `scripts/axis_admin.py`, `scripts/smoke_ingest.py` | Token admin; end-to-end check of a running backend |
+| `docs/hosting.md` | Docker runbook (Demo Day) and the move to AWS |
 
 ## Develop
 
 ```bash
 python3 -m unittest discover -s tests/collector                        # collector tests, stdlib only
+python3 -m unittest discover -s tests/scripts                          # admin and smoke-test scripts
 python3 plugins/creai-telemetry/hooks/usage-collector.py extract ~/.claude/projects/*/*.jsonl   # what would be sent; sends nothing
 deno check supabase/functions/ingest/ && deno test --no-lock supabase/functions/ingest/   # or via npx -y deno
 python3 -m http.server -d dashboard 8000                               # dashboard with demo data
@@ -60,7 +72,14 @@ python3 -m http.server -d dashboard 8000                               # dashboa
 
 Use `$CLAUDE_CONFIG_DIR/projects` instead of `~/.claude/projects` if you set `CLAUDE_CONFIG_DIR`.
 
-Deploy the backend (once a project exists in creai's Supabase org):
+Run everything in Docker on this machine (Docker Desktop and the Supabase CLI needed; see
+[`docs/hosting.md`](docs/hosting.md)):
+
+```bash
+scripts/demo-up.sh && python3 scripts/smoke_ingest.py   # dashboard on http://localhost:8080
+```
+
+Deploy the backend to a hosted project (once one exists in creai's Supabase org):
 
 ```bash
 supabase link --project-ref <ref>

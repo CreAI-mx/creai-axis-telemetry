@@ -45,13 +45,40 @@ def rec_skill(tool_id, skill):
 class Sink(BaseHTTPRequestHandler):
     received = []
     status = 200
+    redirect_to = None
 
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Sink.received.append((self.headers["Authorization"], body))
+        if Sink.redirect_to:
+            self.send_response(302)
+            self.send_header("Location", Sink.redirect_to)
+            self.end_headers()
+            return
         self.send_response(Sink.status)
         self.end_headers()
         self.wfile.write(b'{"accepted": 1}')
+
+    def do_GET(self):  # noqa: N802 - only reached by following a redirect
+        Sink.received.append((self.headers["Authorization"], None))
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *args):
+        pass
+
+
+class ProxySpy(BaseHTTPRequestHandler):
+    """Stands in for a proxy from http_proxy: records whatever reaches it."""
+    received = []
+
+    def do_POST(self):  # noqa: N802
+        ProxySpy.received.append((self.path, self.headers["Authorization"]))
+        self.send_response(502)
+        self.end_headers()
+
+    do_GET = do_POST
 
     def log_message(self, *args):
         pass
@@ -73,7 +100,7 @@ class CollectorTest(unittest.TestCase):
         self.mod = load_collector(self.tmp / "state", self.claude)
         self.transcript = self.claude / "projects" / "-home-dev-agrizar" / "s1.jsonl"
         self.transcript.parent.mkdir(parents=True)
-        Sink.received, Sink.status = [], 200
+        Sink.received, Sink.status, Sink.redirect_to = [], 200, None
 
     def write_records(self, *records, partial=None):
         with open(self.transcript, "a", encoding="utf-8") as fh:
@@ -169,6 +196,36 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(auth, f"Bearer {TOKEN}")
         self.assertEqual(sorted(e["skill"] for e in body["events"]), ["creai-create-pr", "creai-implement"])
         self.assertEqual(self.mod.pending_count(), 0)
+
+    def test_send_never_follows_a_redirect_with_the_token(self):
+        endpoint = self.start_sink()
+        Sink.redirect_to = endpoint + "/elsewhere"
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN})
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+        self.assertEqual(len(Sink.received), 1)  # the POST itself; the redirect target is never requested
+        self.assertEqual(self.mod.read_json(self.mod.LAST_SEND_FILE, {})["error"], "302")
+        self.assertEqual(self.mod.pending_count(), 1)
+
+    def test_loopback_send_bypasses_proxies_but_https_keeps_them(self):
+        endpoint = self.start_sink()
+        proxy = HTTPServer(("127.0.0.1", 0), ProxySpy)
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        self.addCleanup(proxy.server_close)
+        self.addCleanup(proxy.shutdown)
+        ProxySpy.received = []
+        proxy_url = f"http://127.0.0.1:{proxy.server_port}"
+        env = {"http_proxy": proxy_url, "HTTP_PROXY": proxy_url, "https_proxy": proxy_url, "HTTPS_PROXY": proxy_url,
+               "no_proxy": "", "NO_PROXY": ""}
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN})
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        with mock.patch.dict(os.environ, env):
+            self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+            https_proxies = [h.proxies for h in self.mod._opener_for("https://ingest.example").handlers
+                             if isinstance(h, self.mod.urllib.request.ProxyHandler)]
+        self.assertEqual(ProxySpy.received, [])  # the token never went to the proxy
+        self.assertEqual(len(Sink.received), 1)
+        self.assertEqual(https_proxies[0].get("https"), proxy_url)  # corporate proxies still work for https
 
     def test_failed_send_keeps_events_queued_for_next_session(self):
         endpoint = self.start_sink()
@@ -382,6 +439,16 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.mod.CONFIG_FILE.stat().st_mode & 0o777, 0o600)
         self.mod.main(["optout"])
         self.assertFalse(self.mod.CONFIG_FILE.exists())
+
+    def test_optin_allows_http_only_to_this_machine(self):
+        for endpoint, code in [("http://127.0.0.1:54321/functions/v1/ingest", 0),
+                               ("http://localhost:54321/functions/v1/ingest", 0),
+                               ("http://[::1]:54321/functions/v1/ingest", 0),
+                               ("http://192.168.1.20:54321/functions/v1/ingest", 2),
+                               ("http://localhost.evil.example/ingest", 2),
+                               ("http://127.0.0.1@evil.example/ingest", 2)]:
+            with self.subTest(endpoint=endpoint), mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):
+                self.assertEqual(self.mod.main(["optin", "--endpoint", endpoint]), code)
 
 
 if __name__ == "__main__":
