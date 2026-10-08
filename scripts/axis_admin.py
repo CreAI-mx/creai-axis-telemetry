@@ -17,6 +17,7 @@ SHA-256 is stored. Never paste a token into a chat, a ticket or a log.
 import argparse
 import hashlib
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -25,6 +26,8 @@ import urllib.parse
 from pathlib import Path
 
 LOCAL_DB_CONTAINER = "supabase_db_creai-axis-telemetry"
+# The same shape as the axis_usage_devs.email check constraint.
+EMAIL_RE = re.compile(r"[^@]+@creai\.mx", re.IGNORECASE)
 
 
 def split_password(db_url):
@@ -88,8 +91,8 @@ def open_private(path):
 
 
 def cmd_issue(args):
-    if not args.email.lower().endswith("@creai.mx"):
-        sys.exit("Only @creai.mx addresses can opt in.")
+    if not EMAIL_RE.fullmatch(args.email):  # before anything is written, so a bad address leaves nothing behind
+        sys.exit("Give an address of the form name@creai.mx; only @creai.mx addresses can opt in.")
     token = secrets.token_urlsafe(32)
     out = open_private(args.out) if args.out else None
     if out:  # on disk before the database rotates the token, so a failed write never loses the new one

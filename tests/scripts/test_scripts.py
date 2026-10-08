@@ -86,6 +86,17 @@ class AdminTest(FakePsqlCase):
         self.assertEqual(target.read_text(), "old\n")
         self.assertEqual(self.psql_calls(), [])
 
+    def test_a_malformed_address_is_refused_before_anything_is_written(self):
+        target = self.tmp / "token"
+        for email in ("@creai.mx", "a@b@creai.mx", "dev@creai.mx.evil", "dev@example.com"):
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as caught:
+                axis_admin.main(["issue", email, "Dev Name", "--out", str(target)])
+            self.assertIn("name@creai.mx", str(caught.exception), email)
+        self.assertFalse(target.exists())
+        self.assertEqual(self.psql_calls(), [])
+        self.issue("--out", str(target))  # dev@creai.mx still works, in any case
+        self.assertEqual(len(self.psql_calls()), 1)
+
     def test_out_refuses_a_planted_link(self):
         victim = self.tmp / "victim"
         victim.write_text("keep\n")
