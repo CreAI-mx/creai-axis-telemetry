@@ -3,7 +3,7 @@
 -- Plain Postgres + pg_cron, both of which Supabase and Amazon RDS for PostgreSQL provide.
 
 create or replace function public.axis_usage_purge_expired() returns bigint
-language sql as $$
+language sql set search_path = '' as $$
   with gone as (
     delete from public.axis_usage_events where ts < now() - interval '13 months' returning 1
   )

@@ -6,7 +6,8 @@ uses its own throwaway addresses, so runs never touch real devs or each other.
   python3 scripts/smoke_ingest.py [--endpoint URL]   # AXIS_DB_URL selects a non-local database
 
 Defaults to the local Docker stack (scripts/demo-up.sh), where it also checks what dashboard readers
-can see, signing in by magic link through the local mail viewer. Tokens never leave this process.
+can see, signing in by magic link through the local mail viewer, and runs the retention purge. Against
+any other backend it changes only its own throwaway rows. Tokens never leave this process.
 """
 import argparse
 import hashlib
@@ -104,8 +105,8 @@ def event(**overrides):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--endpoint")
-    ap.add_argument("--db-url")
     args = ap.parse_args(argv)
+    args.db_url = None  # only AXIS_DB_URL selects another database: an argument would show its password in `ps`
     env = None  # the local stack's URLs and keys; None against any other backend
     if not args.endpoint:
         out = subprocess.run(["supabase", "status", "-o", "env"], capture_output=True, text=True, check=True).stdout
@@ -119,8 +120,6 @@ def main(argv=None):
         return int(sql("select count(*) from public.axis_usage_events where id = :'id';", id=event_id)[0][0])
 
     token = secrets.token_urlsafe(32)
-    sql("insert into public.axis_usage_devs (email, display_name, token_hash) values (:'email', 'Smoke Test', :'hash');",
-        email=EMAIL, hash=hashlib.sha256(token.encode()).hexdigest())
     failures = []
 
     def check(name, ok, detail=""):
@@ -129,6 +128,9 @@ def main(argv=None):
             failures.append(name)
 
     try:
+        # Inside the try: psql can fail after the insert committed, and the cleanup must still run.
+        sql("insert into public.axis_usage_devs (email, display_name, token_hash) values (:'email', 'Smoke Test', :'hash');",
+            email=EMAIL, hash=hashlib.sha256(token.encode()).hexdigest())
         good = event()
         status, body = post(args.endpoint, token, {"events": [good]})
         check("valid token and event: 200, accepted 1", status == 200 and body == {"accepted": 1, "rejected": 0}, f"{status} {body}")
@@ -173,15 +175,16 @@ def main(argv=None):
 
         rows = sql("select count(*) from cron.job where jobname = 'axis-usage-retention';")
         check("retention job is scheduled", rows == [["1"]], str(rows))
-        # Run the job's function: an event older than 13 months goes, a recent one stays. It purges every
-        # expired row, which is exactly what the scheduled job would do anyway.
-        sql("update public.axis_usage_devs set revoked_at = null where email = :'email';", email=EMAIL)
-        old = event(ts=(datetime.now(timezone.utc) - timedelta(days=430)).isoformat(timespec="seconds"))
-        status, body = post(args.endpoint, token, {"events": [old]})
-        purged = sql("select public.axis_usage_purge_expired();")[0][0]
-        check("retention purge deletes only expired events",
-              status == 200 and count(old["id"]) == 0 and count(good["id"]) == 1 and int(purged) >= 1,
-              f"{status} {body} purged={purged}")
+        if env:
+            # Run the job's function: an event older than 13 months goes, a recent one stays. It purges
+            # every expired row in the database, so it runs only on the local stack, never on shared data.
+            sql("update public.axis_usage_devs set revoked_at = null where email = :'email';", email=EMAIL)
+            old = event(ts=(datetime.now(timezone.utc) - timedelta(days=430)).isoformat(timespec="seconds"))
+            status, body = post(args.endpoint, token, {"events": [old]})
+            purged = sql("select public.axis_usage_purge_expired();")[0][0]
+            check("retention purge deletes only expired events",
+                  status == 200 and count(old["id"]) == 0 and count(good["id"]) == 1 and int(purged) >= 1,
+                  f"{status} {body} purged={purged}")
     finally:
         sql("""delete from public.axis_usage_events where dev_id in (select id from public.axis_usage_devs where email = :'email');
                delete from public.axis_usage_devs where email = :'email';""", email=EMAIL)

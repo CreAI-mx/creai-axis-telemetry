@@ -21,15 +21,20 @@ import smoke_ingest  # noqa: E402
 FAKE_PSQL = """#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_PSQL_LOG"], "a") as log:
+    sql = sys.stdin.read()
     peek = os.environ.get("FAKE_PSQL_PEEK")
     on_disk = open(peek).read() if peek and os.path.exists(peek) else None
-    log.write(json.dumps({"argv": sys.argv[1:], "password": os.environ.get("PGPASSWORD"), "on_disk": on_disk}) + "\\n")
-sys.stdin.read()
+    log.write(json.dumps({"argv": sys.argv[1:], "password": os.environ.get("PGPASSWORD"), "on_disk": on_disk, "sql": sql}) + "\\n")
+fail_on = os.environ.get("FAKE_PSQL_FAIL_ON")
+if fail_on and fail_on in sql:
+    sys.exit(1)
+print(os.environ.get("FAKE_PSQL_STDOUT", ""))
 sys.exit(int(os.environ.get("FAKE_PSQL_RC", "0")))
 """
 
 
-class AdminTest(unittest.TestCase):
+class FakePsqlCase(unittest.TestCase):
+    """AXIS_DB_URL points at a remote database, and psql is a stand-in that logs each call."""
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
@@ -45,13 +50,15 @@ class AdminTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def psql_calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+
+class AdminTest(FakePsqlCase):
     def issue(self, *extra):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             axis_admin.main(["issue", "dev@creai.mx", "Dev Name", *extra])
         return out.getvalue()
-
-    def psql_calls(self):
-        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
 
     def test_out_creates_a_new_owner_only_file_with_the_token(self):
         target = self.tmp / "token"
@@ -146,7 +153,7 @@ class Recorder(BaseHTTPRequestHandler):
         pass
 
 
-class SmokeHttpTest(unittest.TestCase):
+class SmokeTest(FakePsqlCase):
     def serve(self, reply):
         handler = type("Handler", (Recorder,), {"hits": [], "reply": reply})
         server = HTTPServer(("127.0.0.1", 0), handler)
@@ -174,6 +181,28 @@ class SmokeHttpTest(unittest.TestCase):
             opener = smoke_ingest.urlopen(urllib.request.Request("https://ingest.example/x"))
         proxies = [h.proxies for h in opener.handlers if isinstance(h, urllib.request.ProxyHandler)]
         self.assertEqual(proxies[0].get("https"), "http://proxy.example:3128")
+
+    def smoke(self, endpoint, **env):
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                return smoke_ingest.main(["--endpoint", endpoint])
+            except SystemExit as stop:
+                return stop
+
+    def test_smoke_cleans_up_even_when_its_first_insert_reports_a_failure(self):
+        endpoint, _ = self.serve((200, {}))
+        self.assertIsInstance(self.smoke(endpoint, FAKE_PSQL_FAIL_ON="insert into public.axis_usage_devs"), SystemExit)
+        sqls = [c["sql"] for c in self.psql_calls()]
+        self.assertIn("insert into public.axis_usage_devs", sqls[0])
+        self.assertIn("delete from public.axis_usage_devs", sqls[-1])
+
+    def test_smoke_never_purges_a_database_other_than_the_local_stack(self):
+        endpoint, _ = self.serve((200, {}))
+        self.assertEqual(self.smoke(endpoint, FAKE_PSQL_STDOUT="0"), 1)  # checks fail against the stub; fine
+        sqls = [c["sql"] for c in self.psql_calls()]
+        self.assertTrue(any("cron.job" in q for q in sqls))  # it got as far as the retention checks
+        self.assertFalse(any("axis_usage_purge_expired" in q for q in sqls))
+        self.assertIn("delete from public.axis_usage_devs", sqls[-1])
 
 if __name__ == "__main__":
     unittest.main()
