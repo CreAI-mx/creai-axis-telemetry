@@ -4,7 +4,7 @@ Order is contract-first: the backend accepts events before any dev can send them
 
 ## 0. Decisions
 - [x] Repo: `CreAI-mx/creai-axis-telemetry`, holding the plugin, backend and dashboard (2026-10-07)
-- [ ] Backend host: Supabase in creai's org (as built) or AWS (design § Open questions 4)
+- [x] Backend host: Supabase for now, in Docker for Demo Day, ready to move to AWS (2026-10-07; `docs/hosting.md`)
 - [ ] Windows invocation settled (§ Open questions 1)
 - [ ] Dashboard host chosen (§ Open questions 2)
 - [ ] Privacy-notice owner confirms opt-in wording and 13-month retention
@@ -15,9 +15,11 @@ Order is contract-first: the backend accepts events before any dev can send them
 - [ ] Create the Supabase project in creai's org; enable the Entra ID (or Google) provider
 - [ ] `supabase link`, then `supabase db push` to apply `migrations/20261007000000_axis_usage.sql`
 - [ ] `supabase functions deploy ingest` (`verify_jwt = false` is set in `config.toml`)
-- [ ] Smoke test: a valid token gets 200, a revoked token 401, a duplicate id is accepted and ignored, a bad slug is rejected
-- [ ] Monthly `pg_cron` retention job
-- [ ] Admin script to issue and revoke tokens (replaces manual SQL)
+- [x] Smoke test on the local stack: a valid token gets 200, a revoked token 401, a duplicate id is accepted and ignored, a bad slug is rejected
+- [x] Monthly `pg_cron` retention job (`20261007200000_axis_usage_retention.sql`)
+- [x] Admin script to issue, revoke and list tokens and forget a dev's events (`scripts/axis_admin.py`)
+- [x] Local Docker stack: `scripts/demo-up.sh`, `scripts/demo-down.sh`, smoke test `scripts/smoke_ingest.py`
+- [ ] Stable endpoint name in front of the backend before the pilot (`docs/hosting.md` § Keep the endpoint stable)
 
 ## 2. Collector (`plugins/creai-telemetry/`)
 - [x] Collector, hooks, `/creai-telemetry:creai-usage` skill, tests, CI
@@ -26,6 +28,7 @@ Order is contract-first: the backend accepts events before any dev can send them
 - [ ] Install test on a clean machine: `claude plugin marketplace add CreAI-mx/creai-axis-telemetry`, then install `creai-telemetry`
 
 ## 3. Dashboard (`dashboard/`)
+- [x] Demo Day: nginx container (`deploy/docker-compose.yml`), magic-link sign-in on the local stack
 - [ ] Deploy behind SSO with a `config.js` (URL and anon key)
 - [ ] Verify that a non-`@creai.mx` account sees nothing
 

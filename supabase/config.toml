@@ -1,5 +1,30 @@
-# Minimal Supabase CLI config. `supabase link --project-ref <ref>` points it at the creai org project.
+# Supabase CLI config. Locally, `supabase start` runs the whole backend in Docker (docs/hosting.md);
+# `supabase link --project-ref <ref>` points the same migrations and function at a hosted project.
 project_id = "creai-axis-telemetry"
+
+[db]
+major_version = 17
+
+# Not used by this project; off so the local Docker stack stays small.
+[realtime]
+enabled = false
+
+[storage]
+enabled = false
+
+[analytics]
+enabled = false
+
+[auth]
+# The dashboard container (deploy/docker-compose.yml) serves on port 8080.
+site_url = "http://localhost:8080"
+additional_redirect_urls = ["http://localhost:8080/", "http://127.0.0.1:8080/"]
+
+# Local sign-in is by magic link; the email lands in the local mail viewer (Mailpit), never the internet.
+# Row Level Security still admits only @creai.mx addresses.
+[auth.email]
+enable_signup = true
+enable_confirmations = false
 
 # The ingest function authenticates with per-dev ingest tokens, not Supabase JWTs.
 [functions.ingest]

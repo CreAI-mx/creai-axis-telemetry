@@ -31,6 +31,7 @@ import shutil
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,7 @@ FALLBACK_PLUGINS = {"creai-common", "creai-backend", "creai-frontend", "creai-da
 COMMAND_RE = re.compile(r"<command-name>/?([a-z0-9-]+(?::[a-z0-9-]+)?)</command-name>")
 BATCH_SIZE = 500
 HTTP_TIMEOUT_S = 5
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 # Claude Code kills the hook at 10 s (hooks.json). Stop scanning and sending well before that and
 # leave the rest for the next hook: unscanned files stay listed as incomplete, unsent events stay queued.
 HOOK_BUDGET_S = 8
@@ -529,9 +531,22 @@ def cmd_hook(_args):
     return 0
 
 
+def endpoint_allowed(url):
+    """https anywhere; plain http only to this machine (the local Docker backend), so a token
+    never crosses a network in clear text."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return False
+    if parts.scheme == "https":
+        return bool(host)
+    return parts.scheme == "http" and host in LOOPBACK_HOSTS and "@" not in parts.netloc
+
+
 def cmd_optin(args):
-    if not args.endpoint.startswith("https://"):
-        print("The endpoint must be an https:// URL.", file=sys.stderr)
+    if not endpoint_allowed(args.endpoint):
+        print("The endpoint must be an https:// URL (http:// only for localhost).", file=sys.stderr)
         return 2
     token = sys.stdin.readline().strip() if not sys.stdin.isatty() else getpass.getpass("Ingest token: ").strip()
     if len(token) < 32:

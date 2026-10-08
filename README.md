@@ -34,8 +34,15 @@ other plugins.
 <!-- ASSUMPTION: owner not named yet; see tasks.md § 0 -->
 Ingest tokens are issued by: **TBD**. Ask in the team channel until this is filled in.
 
-Issuing a token in v1 means inserting into `axis_usage_devs` the email, display name and
-`sha256(token)`, then giving the token to the dev privately. Revoking means setting `revoked_at`.
+Tokens are issued with `scripts/axis_admin.py` (psql underneath; local Docker stack by default,
+`--db-url` for any other Postgres). Only `sha256(token)` is stored; give the token to the dev privately.
+
+```bash
+python3 scripts/axis_admin.py issue dev@creai.mx "Dev Name" --out /tmp/dev-token   # or re-issue to rotate
+python3 scripts/axis_admin.py revoke dev@creai.mx
+python3 scripts/axis_admin.py forget dev@creai.mx   # deletes their events on request
+python3 scripts/axis_admin.py list
+```
 
 ## Layout
 
@@ -48,6 +55,9 @@ Issuing a token in v1 means inserting into `axis_usage_devs` the email, display 
 | `tests/collector/` | Collector unit tests |
 | `supabase/migrations/`, `supabase/functions/ingest/` | Schema, RLS, views; ingest endpoint (`handler.ts` holds the logic and its tests) |
 | `dashboard/index.html`, `dashboard/config.example.js` | Dashboard; demo data until `config.js` exists |
+| `deploy/docker-compose.yml`, `scripts/demo-up.sh`, `scripts/demo-down.sh` | Run everything in Docker on one machine |
+| `scripts/axis_admin.py`, `scripts/smoke_ingest.py` | Token admin; end-to-end check of a running backend |
+| `docs/hosting.md` | Docker runbook (Demo Day) and the move to AWS |
 
 ## Develop
 
@@ -60,7 +70,14 @@ python3 -m http.server -d dashboard 8000                               # dashboa
 
 Use `$CLAUDE_CONFIG_DIR/projects` instead of `~/.claude/projects` if you set `CLAUDE_CONFIG_DIR`.
 
-Deploy the backend (once a project exists in creai's Supabase org):
+Run everything in Docker on this machine (Docker Desktop and the Supabase CLI needed; see
+[`docs/hosting.md`](docs/hosting.md)):
+
+```bash
+scripts/demo-up.sh && python3 scripts/smoke_ingest.py   # dashboard on http://localhost:8080
+```
+
+Deploy the backend to a hosted project (once one exists in creai's Supabase org):
 
 ```bash
 supabase link --project-ref <ref>

@@ -383,6 +383,16 @@ class CollectorTest(unittest.TestCase):
         self.mod.main(["optout"])
         self.assertFalse(self.mod.CONFIG_FILE.exists())
 
+    def test_optin_allows_http_only_to_this_machine(self):
+        for endpoint, code in [("http://127.0.0.1:54321/functions/v1/ingest", 0),
+                               ("http://localhost:54321/functions/v1/ingest", 0),
+                               ("http://[::1]:54321/functions/v1/ingest", 0),
+                               ("http://192.168.1.20:54321/functions/v1/ingest", 2),
+                               ("http://localhost.evil.example/ingest", 2),
+                               ("http://127.0.0.1@evil.example/ingest", 2)]:
+            with self.subTest(endpoint=endpoint), mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):
+                self.assertEqual(self.mod.main(["optin", "--endpoint", endpoint]), code)
+
 
 if __name__ == "__main__":
     unittest.main()

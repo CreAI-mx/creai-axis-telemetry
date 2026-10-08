@@ -84,17 +84,20 @@ writes one marker file per transcript to `usage-rescan/`, which needs no lock.
 
 ## Identity and auth
 
-- **Opt-in creates the identity.** An admin inserts an `axis_usage_devs` row (email, display name)
-  holding the SHA-256 of a random 32+ char token, then hands the token to the dev once over a private
-  channel. The dev runs `! python3 …/usage-collector.py optin --endpoint …`, which reads the token with
+- **Opt-in creates the identity.** An admin runs `scripts/axis_admin.py issue`, which inserts an
+  `axis_usage_devs` row (email, display name) holding the SHA-256 of a random 32+ char token, then hands
+  the token to the dev once over a private channel. The dev runs `! python3 …/usage-collector.py optin --endpoint …`, which reads the token with
   `getpass`, so it never lands in shell history, argv or the Claude conversation. It's stored in
   `~/.config/creai-axis/usage.json` with mode 600.
 - **No shared secret on laptops.** The Edge Function holds the service role, and each token can
   only write events for its own dev. Revoking means setting `revoked_at`.
 - **Readers** sign in with Supabase Auth. ASSUMPTION: Microsoft Entra ID, since creai runs Microsoft
-  365. RLS allows `select` to any authenticated `@creai.mx` email. The dashboard can never read
+  365. The local Docker stack has no Entra app, so there the dashboard signs in by magic link
+  (`authProvider: "email"`); the same RLS applies. RLS allows `select` to any authenticated `@creai.mx` email. The dashboard can never read
   `token_hash`, and no client role holds `insert`, `update` or `delete` grants.
 - Deploy the function with `--no-verify-jwt`, since it authenticates with its own token.
+- The collector only sends to `https://` endpoints, except plain `http://` to `localhost`, `127.0.0.1`
+  or `::1` (the local Docker stack), so a token never crosses a network in clear text.
 
 ## Privacy
 
@@ -104,8 +107,8 @@ writes one marker file per transcript to `usage-rescan/`, which needs no lock.
   opted out drops its unsent events instead of requeueing them; only an empty `usage.lock` remains.
   Deleting server rows is an admin action on request; it's the one exception to append-only, and
   it's logged in the Jira ticket.
-- ASSUMPTION: retention of 13 months, enough for a year-over-year view. A monthly `pg_cron` job would
-  delete older rows. Confirm with whoever owns creai's privacy notice (LFPDPPP); employee data
+- ASSUMPTION: retention of 13 months, enough for a year-over-year view. A monthly `pg_cron` job
+  (`axis-usage-retention`, migration `20261007200000`) deletes older rows. Confirm with whoever owns creai's privacy notice (LFPDPPP); employee data
   processing may need a line in the internal privacy notice.
 
 ## Metrics (as the dashboard computes them)
@@ -140,14 +143,15 @@ The collector still only counts plugins from the `creai-axis` marketplace (`MARK
    and native Windows often has only `python` or `py`. Options: a `.ps1` twin like creai-axis's hooks,
    or a launcher that tries `python3`, `python`, `py -3` in turn. Ask whoever owns Windows support for
    Axis v2 which one they'd accept.
-2. **Dashboard hosting.** A static page behind Entra: Azure Static Web Apps, AWS S3 + CloudFront,
+2. **Dashboard hosting** after Demo Day (until then, an nginx container; see `docs/hosting.md`). A static page behind Entra: Azure Static Web Apps, AWS S3 + CloudFront,
    Vercel with SSO, or Supabase Storage. A claude.ai artifact works for the demo but can't reach
    Supabase (its CSP blocks fetch).
-3. **Who issues tokens**: the platform owner, or a small admin page. It's manual SQL in v1.
-4. **Backend host.** Supabase in creai's org (as built, not a personal project), or AWS (API Gateway +
-   Lambda for ingest, DynamoDB with TTL for retention, S3 + CloudFront for the dashboard) if creai
-   standardizes there. The collector and the event contract don't change either way; only `supabase/`
-   and the dashboard's data layer would be replaced.
+3. **Who issues tokens**: the platform owner, or a small admin page. In v1 it's `scripts/axis_admin.py`.
+4. **Backend host.** Decided 2026-10-07: Supabase for now, run in Docker on one machine for Demo Day,
+   kept ready to move to AWS. The collector and the event contract don't change either way. The AWS
+   mapping (RDS PostgreSQL, Lambda reusing `handler.ts`, S3 + CloudFront) and the data move are in
+   `docs/hosting.md`. Before the pilot, hand devs an endpoint on a name creai controls, so a move
+   doesn't make everyone re-run `optin`.
 
 ## Phase 2 (not in this change)
 
