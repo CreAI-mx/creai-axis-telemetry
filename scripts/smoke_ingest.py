@@ -56,7 +56,7 @@ def http(method, url, body=None, headers=None):
 
 def sign_in(env, email):
     """Magic-link sign-in via the local mail viewer (Mailpit). Returns an access token."""
-    api, anon, mail = env["API_URL"], env["ANON_KEY"], env["MAILPIT_URL"]
+    api, anon, mail = env["API_URL"], env["ANON_KEY"], env.get("MAILPIT_URL") or env["INBUCKET_URL"]  # older CLIs name it INBUCKET_URL
     query = urllib.parse.quote(f"to:{email}")
     http("DELETE", f"{mail}/api/v1/search?query={query}")
     status, body = http("POST", f"{api}/auth/v1/otp", {"email": email, "create_user": True}, {"apikey": anon})
@@ -170,9 +170,9 @@ def main(argv=None):
               f"{status} {body} purged={purged}")
     finally:
         sql("""delete from public.axis_usage_events where dev_id in (select id from public.axis_usage_devs where email = :'email');
-               delete from public.axis_usage_devs where email = :'email';
-               delete from auth.users where email in (:'reader', :'outsider');""",
-            email=EMAIL, reader=READER, outsider=OUTSIDER)
+               delete from public.axis_usage_devs where email = :'email';""", email=EMAIL)
+        if env:  # sign-in accounts exist only on the local stack (auth.users is Supabase's)
+            sql("delete from auth.users where email in (:'reader', :'outsider');", reader=READER, outsider=OUTSIDER)
 
     print(f"\n{'All checks passed' if not failures else f'{len(failures)} check(s) failed'} against {args.endpoint}")
     return 1 if failures else 0

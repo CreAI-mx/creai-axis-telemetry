@@ -89,5 +89,18 @@ class AdminTest(unittest.TestCase):
         self.assertIn("postgresql://admin@db.example.com:5432/postgres", call["argv"])
 
 
+    def test_a_password_in_the_query_string_also_stays_out_of_argv(self):
+        url = "postgresql://admin@db.example.com/postgres?sslmode=require&password=se%26cr%3Det&application_name=a%20b"
+        with mock.patch.dict(os.environ, {"AXIS_DB_URL": url}):
+            self.issue("--out", str(self.tmp / "token"))
+        (call,) = self.psql_calls()
+        self.assertEqual(call["password"], "se&cr=et")
+        self.assertNotIn("se%26cr", " ".join(call["argv"]))
+        self.assertIn("postgresql://admin@db.example.com/postgres?sslmode=require&application_name=a%20b", call["argv"])
+
+    def test_urls_without_a_password_pass_through_unchanged(self):
+        for url in ("postgresql://admin@db.example.com/postgres?sslmode=require", "postgresql:///postgres"):
+            self.assertEqual(axis_admin.split_password(url), (url, None))
+
 if __name__ == "__main__":
     unittest.main()

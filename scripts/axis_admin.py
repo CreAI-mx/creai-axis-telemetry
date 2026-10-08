@@ -29,14 +29,25 @@ LOCAL_DB_CONTAINER = "supabase_db_creai-axis-telemetry"
 
 def split_password(db_url):
     """Return (URL without its password, password or None). The password goes to psql through
-    PGPASSWORD, because psql's arguments are visible to every user on the machine via `ps`."""
+    PGPASSWORD, because psql's arguments are visible to every user on the machine via `ps`. libpq takes
+    a password before the `@` or as `?password=`, so both are removed; the query string's wins."""
     parts = urllib.parse.urlsplit(db_url)
-    if parts.password is None:
+    password = urllib.parse.unquote(parts.password) if parts.password is not None else None
+    netloc = parts.netloc
+    if parts.password is not None:
+        netloc = netloc.rsplit("@", 1)[1]
+        if parts.username is not None:
+            netloc = urllib.parse.quote(urllib.parse.unquote(parts.username), safe="") + "@" + netloc
+    query = []
+    for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
+        if key == "password":
+            password = value
+        else:
+            query.append((key, value))
+    if password is None:
         return db_url, None
-    netloc = parts.netloc.rsplit("@", 1)[1]
-    if parts.username is not None:
-        netloc = urllib.parse.quote(urllib.parse.unquote(parts.username), safe="") + "@" + netloc
-    return urllib.parse.urlunsplit(parts._replace(netloc=netloc)), urllib.parse.unquote(parts.password)
+    query = urllib.parse.urlencode(query, quote_via=urllib.parse.quote)
+    return urllib.parse.urlunsplit(parts._replace(netloc=netloc, query=query)), password
 
 
 def psql(args, sql, **params):
