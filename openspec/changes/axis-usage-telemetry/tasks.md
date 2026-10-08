@@ -37,3 +37,6 @@ Order is contract-first: the backend accepts events before any dev can send them
 - [ ] 3 devs install, opt in and backfill; compare dashboard counts with their own `extract` output
 - [ ] Announce to the team; issue tokens on request
 - [ ] Review after 4 weeks: is the funnel definition useful, and is anything missing?
+
+## 5. After the pilot
+- [ ] Review `docs/ideas.md` with the team and pick what to turn into tickets

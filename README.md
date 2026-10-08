@@ -57,8 +57,9 @@ python3 scripts/axis_admin.py list
 | `supabase/migrations/`, `supabase/functions/ingest/` | Schema, RLS, views; ingest endpoint (`handler.ts` holds the logic and its tests) |
 | `dashboard/index.html`, `dashboard/config.example.js` | Dashboard; demo data until `config.js` exists |
 | `deploy/docker-compose.yml`, `scripts/demo-up.sh`, `scripts/demo-down.sh` | Run everything in Docker on one machine |
-| `scripts/axis_admin.py`, `scripts/smoke_ingest.py` | Token admin; end-to-end check of a running backend |
+| `scripts/axis_admin.py`, `scripts/smoke_ingest.py`, `scripts/seed_demo.py` | Token admin; end-to-end check of a running backend; fictitious demo data for the local stack |
 | `docs/hosting.md` | Docker runbook (Demo Day) and the move to AWS |
+| `docs/ideas.md` | Ideas for after Demo Day: telemetry features, decoupling from creai-axis, role packs beyond devs |
 
 ## Develop
 

@@ -21,6 +21,7 @@ Python 3.9+. The dashboard loads supabase-js and its font from a CDN, so the mac
 ```bash
 scripts/demo-up.sh                 # starts everything, writes dashboard/config.js, prints the URLs
 python3 scripts/smoke_ingest.py    # end-to-end checks against the running stack; cleans up after itself
+python3 scripts/seed_demo.py       # optional: 14 fictitious devs and 13 weeks of events (--clear removes them)
 scripts/demo-down.sh               # stops it; data is kept for the next demo-up
 ```
 
