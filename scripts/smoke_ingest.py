@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end smoke test of a running backend: issues a throwaway dev, exercises the ingest
-endpoint and checks what landed in the database, then deletes the dev and its events.
+endpoint and checks what landed in the database, then deletes the dev and its events. Every run
+uses its own throwaway addresses, so runs never touch real devs or each other.
 
   python3 scripts/smoke_ingest.py [--endpoint URL]   # AXIS_DB_URL selects a non-local database
 
@@ -22,9 +23,11 @@ from datetime import datetime, timedelta, timezone
 
 import axis_admin
 
-EMAIL = "smoke-test@creai.mx"
-READER = "smoke-reader@creai.mx"
-OUTSIDER = "smoke-outsider@example.com"
+# Fresh identities per run, so a run only ever touches (and cleans up) what it created itself.
+RUN = secrets.token_hex(4)
+EMAIL = f"smoke-test-{RUN}@creai.mx"
+READER = f"smoke-reader-{RUN}@creai.mx"
+OUTSIDER = f"smoke-outsider-{RUN}@example.com"
 
 
 def post(endpoint, token, body):
@@ -102,8 +105,7 @@ def main(argv=None):
         return int(sql("select count(*) from public.axis_usage_events where id = :'id';", id=event_id)[0][0])
 
     token = secrets.token_urlsafe(32)
-    sql("""insert into public.axis_usage_devs (email, display_name, token_hash) values (:'email', 'Smoke Test', :'hash')
-           on conflict (email) do update set token_hash = excluded.token_hash, revoked_at = null;""",
+    sql("insert into public.axis_usage_devs (email, display_name, token_hash) values (:'email', 'Smoke Test', :'hash');",
         email=EMAIL, hash=hashlib.sha256(token.encode()).hexdigest())
     failures = []
 

@@ -64,16 +64,13 @@ def psql(args, sql, **params):
 
 
 def open_private(path):
-    """Open `path` for writing, readable by the owner only, even if it already existed with a wider mode."""
-    fd = os.open(Path(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Create `path` as a new file readable by the owner only. An existing path is refused rather than
+    reused: another process may already hold it open, and in a shared folder it may be a planted link."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)  # O_CREAT's mode applies only to a new file
-        else:
-            os.chmod(path, 0o600)
-    except OSError:
-        os.close(fd)
-        raise
+        fd = os.open(Path(path), flags, 0o600)
+    except FileExistsError:
+        sys.exit(f"{path} already exists. Give a new path; the token is only written to a file created for it.")
     return os.fdopen(fd, "w")
 
 
@@ -82,6 +79,23 @@ def cmd_issue(args):
         sys.exit("Only @creai.mx addresses can opt in.")
     token = secrets.token_urlsafe(32)
     out = open_private(args.out) if args.out else None  # before the database, so a bad path loses nothing
+    try:
+        store_token(args, token)
+    except BaseException:  # psql failures exit; don't leave an empty token file behind
+        if out:
+            out.close()
+            os.unlink(args.out)
+        raise
+    if out:
+        with out:
+            out.write(token + "\n")
+        print(f"Token for {args.email} written to {args.out} (mode 600). Hand it over privately, then delete the file.")
+    else:
+        print(f"Token for {args.email} (shown once; hand it over privately):\n{token}")
+    return 0
+
+
+def store_token(args, token):
     # Re-issuing rotates the token: the old one stops working at once, and a revoked dev is reinstated.
     psql(args, """
         insert into public.axis_usage_devs (email, display_name, github_login, token_hash)
@@ -93,13 +107,6 @@ def cmd_issue(args):
               revoked_at = null;
         """, email=args.email, name=args.name, github=args.github or "",
          hash=hashlib.sha256(token.encode()).hexdigest())
-    if out:
-        with out:
-            out.write(token + "\n")
-        print(f"Token for {args.email} written to {args.out} (mode 600). Hand it over privately, then delete the file.")
-    else:
-        print(f"Token for {args.email} (shown once; hand it over privately):\n{token}")
-    return 0
 
 
 def cmd_revoke(args):
@@ -150,7 +157,7 @@ def main(argv=None):
     p.add_argument("email")
     p.add_argument("name")
     p.add_argument("--github")
-    p.add_argument("--out", help="write the token to this file (mode 600) instead of printing it")
+    p.add_argument("--out", help="write the token to this new file (mode 600; must not exist yet) instead of printing it")
     p.set_defaults(fn=cmd_issue)
     p = sub.add_parser("revoke", help="revoke a dev's token")
     p.add_argument("email")

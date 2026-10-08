@@ -38,7 +38,7 @@ Tokens are issued with `scripts/axis_admin.py` (psql underneath; local Docker st
 `AXIS_DB_URL=postgresql://…` for any other Postgres). Only `sha256(token)` is stored; give the token to the dev privately.
 
 ```bash
-python3 scripts/axis_admin.py issue dev@creai.mx "Dev Name" --out /tmp/dev-token   # or re-issue to rotate
+python3 scripts/axis_admin.py issue dev@creai.mx "Dev Name" --out ~/dev-token   # new file, mode 600; re-issue to rotate
 python3 scripts/axis_admin.py revoke dev@creai.mx
 python3 scripts/axis_admin.py forget dev@creai.mx   # deletes their events on request
 python3 scripts/axis_admin.py list

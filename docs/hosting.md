@@ -68,11 +68,17 @@ The collector and the event contract don't change. What changes is the box behin
 ASSUMPTION: RDS rather than the DynamoDB option in the design, because the dashboard views and the
 funnel are SQL and move as they are.
 
-**Moving data.** Copy two tables; nothing else holds state:
+**Moving data.** Copy two tables; nothing else holds state. The dump holds named usage data and
+token hashes, so keep it owner-only and delete it after the import. Keep passwords off the command
+line too (`ps` shows every argument to every user): put them in `~/.pgpass` (mode 600, one
+`host:port:database:user:password` line per server) and connect without one.
 
 ```bash
-pg_dump "$SUPABASE_DB_URL" --data-only -t public.axis_usage_devs -t public.axis_usage_events > axis-usage.sql
-psql "$RDS_URL" -f axis-usage.sql
+chmod 600 ~/.pgpass
+(umask 077 && pg_dump "host=<supabase-host> port=5432 dbname=postgres user=postgres" \
+  --data-only -t public.axis_usage_devs -t public.axis_usage_events -f axis-usage.sql)
+psql "host=<rds-endpoint> port=5432 dbname=<db> user=<user>" -v ON_ERROR_STOP=1 -f axis-usage.sql
+rm axis-usage.sql
 ```
 
 Token hashes move with `axis_usage_devs`, so every dev's token keeps working.
