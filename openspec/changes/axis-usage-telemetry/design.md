@@ -62,7 +62,9 @@ sequenceDiagram
 
 **Sessions that end without `SessionEnd`.** Claude Code doesn't run `SessionEnd` when it's killed or
 crashes, or when the terminal is closed. So every `SessionStart` also lists the transcripts on the
-machine and collects those changed since opt-in whose size differs from their cursor. Fully read files
+machine and collects those changed since opt-in whose size differs from their cursor. "Since
+opt-in" is the config file's write time, which is sub-second; `opted_in_at` is rounded to the
+second and could let in a transcript written just before consent. Fully read files
 cost one `stat` each (about 26 ms for 5,000 files) and are never opened. Files last changed before
 opt-in are left alone: loading history stays the dev's choice through `backfill`. A session that is
 still running elsewhere is read up to its last complete line, and the rest is collected later.
@@ -72,7 +74,7 @@ used, leaving room for one 5 s send. A file it didn't finish goes on an `incompl
 file, and the next hook (any session's, start or end) resumes it. It only starts a batch whose 5 s HTTP
 timeout still fits the budget; the rest stays queued. A last line still being written when the hook
 runs also keeps the file on the `incomplete` list, so a later hook collects it once it's complete. A
-line still cut off after a day is abandoned (its writer died). Only lines containing `"Skill"` or
+line still cut off after a day is abandoned (its writer died) and the cursor moves past it. Only lines containing `"Skill"` or
 `<command-name>` are parsed as JSON; tool output, which can run to megabytes per line, is skipped
 unparsed, and so is any line over 8 MB.
 

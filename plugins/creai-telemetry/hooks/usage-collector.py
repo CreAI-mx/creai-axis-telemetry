@@ -245,12 +245,11 @@ def transcript_files():
     return sorted(projects.glob("*/*.jsonl")) + sorted(projects.glob("*/*/subagents/*.jsonl"))
 
 
-def opted_in_since(config):
-    """When this machine opted in, as a timestamp. Falls back to the config file's mtime."""
-    try:
-        return datetime.fromisoformat(config["opted_in_at"]).timestamp()
-    except (KeyError, TypeError, ValueError):
-        return CONFIG_FILE.stat().st_mtime
+def opted_in_since():
+    """When this machine opted in: the config file's write time. Only `optin` writes that file, after
+    consent, and its mtime is sub-second, unlike `opted_in_at`, which is rounded down to the second
+    and so could let in a transcript written just before consent."""
+    return CONFIG_FILE.stat().st_mtime
 
 
 def unread_transcripts(since):
@@ -392,7 +391,9 @@ def collect(paths, index, deadline=None):
             start = 0
         events, offset, status = scan_file(path, index, start, deadline)
         if status == "partial" and time.time() - st.st_mtime > ABANDONED_PARTIAL_S:
-            status = "done"  # the writer died mid-line; nothing more will come
+            # The writer died mid-line; nothing more will come. Skip the cut-off line too, so the
+            # cursor matches the file size and SessionStart stops reopening the file.
+            status, offset = "done", st.st_size
         queued.extend(events)
         # Unfinished files (out of time, or a last line still being written) stay listed for later hooks.
         progress[key] = (offset, status == "done")
@@ -572,7 +573,7 @@ def cmd_hook(_args):
         # Also resume files an earlier hook ran out of time on, or couldn't save because of the lock.
         pending = [Path(key) for key in [*read_cursors()["incomplete"], *marked_for_rescan()]]
         if event == "SessionStart":
-            pending += unread_transcripts(opted_in_since(config))
+            pending += unread_transcripts(opted_in_since())
         seen = set(paths)
         for path in pending:
             if path not in seen:

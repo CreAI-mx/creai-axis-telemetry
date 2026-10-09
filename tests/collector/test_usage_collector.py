@@ -392,6 +392,11 @@ class CollectorTest(unittest.TestCase):
         os.utime(self.transcript, (old, old))
         self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex()), 1)
         self.assertEqual(self.mod.read_cursors()["incomplete"], [])
+        # The cursor skips the cut-off line, so later SessionStarts don't reopen the file.
+        self.assertEqual(self.mod.read_cursors()["offsets"][str(self.transcript)], self.transcript.stat().st_size)
+        with mock.patch.object(self.mod, "scan_file", wraps=self.mod.scan_file) as scan:
+            self.run_hook({"hook_event_name": "SessionStart"})
+        scan.assert_not_called()
 
     def test_opting_out_mid_send_leaves_nothing_queued(self):
         self.opt_in()
@@ -446,6 +451,18 @@ class CollectorTest(unittest.TestCase):
         self.run_hook({"hook_event_name": "SessionStart"})
         self.assertEqual(Sink.received, [])
         self.assertEqual(self.mod.read_cursors()["offsets"], {})
+
+    def test_session_start_skips_a_transcript_written_in_the_second_before_opt_in(self):
+        endpoint = self.start_sink()
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        # opted_in_at is rounded down to the second, so it can predate the transcript. The config's
+        # write time can't: it's sub-second and later than anything written before consent.
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN,
+                                                   "opted_in_at": self.iso(int(time.time()) - 1)})
+        before = self.mod.CONFIG_FILE.stat().st_mtime - 0.001
+        os.utime(self.transcript, (before, before))
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual(Sink.received, [])
 
     def test_session_start_does_not_reopen_transcripts_already_read(self):
         endpoint = self.start_sink()
