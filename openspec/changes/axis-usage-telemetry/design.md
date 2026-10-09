@@ -56,8 +56,16 @@ sequenceDiagram
     C-->>CC: exit 0 always
   end
   CC->>C: SessionStart (next session)
-  C->>F: retry whatever is still queued
+  C->>Q: collect transcripts changed since opt-in with unread bytes
+  C->>F: send them, and retry whatever is still queued
 ```
+
+**Sessions that end without `SessionEnd`.** Claude Code doesn't run `SessionEnd` when it's killed or
+crashes, or when the terminal is closed. So every `SessionStart` also lists the transcripts on the
+machine and collects those changed since opt-in whose size differs from their cursor. Fully read files
+cost one `stat` each (about 26 ms for 5,000 files) and are never opened. Files last changed before
+opt-in are left alone: loading history stays the dev's choice through `backfill`. A session that is
+still running elsewhere is read up to its last complete line, and the rest is collected later.
 
 **Time budget.** Claude Code kills the hook at 10 s, so the hook budgets 8 s. It scans until 2 s are
 used, leaving room for one 5 s send. A file it didn't finish goes on an `incomplete` list in the cursor

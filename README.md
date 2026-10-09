@@ -50,7 +50,7 @@ python3 scripts/axis_admin.py list
 |---|---|
 | `.claude-plugin/marketplace.json` | One-plugin marketplace |
 | `plugins/creai-telemetry/hooks/usage-collector.py` | Collector: stdlib-only Python 3.9+, always exits 0 |
-| `plugins/creai-telemetry/hooks/hooks.json` | `SessionStart` (retry queue) and `SessionEnd` (collect + send) |
+| `plugins/creai-telemetry/hooks/hooks.json` | `SessionEnd` (collect + send) and `SessionStart` (catch up on sessions that ended without `SessionEnd`, retry queue) |
 | `plugins/creai-telemetry/skills/creai-usage/SKILL.md` | Opt in, backfill, status, opt out |
 | `tests/collector/` | Collector unit tests |
 | `tests/scripts/` | Tests for the admin and smoke-test scripts (stand-in `psql`, no database) |

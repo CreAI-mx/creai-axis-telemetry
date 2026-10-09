@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -419,6 +420,46 @@ class CollectorTest(unittest.TestCase):
         self.run_hook({"hook_event_name": "SessionStart"})
         self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-implement"])
         self.assertEqual(self.mod.marked_for_rescan(), [])
+
+    # --- sessions that end without SessionEnd ---
+
+    def test_a_killed_session_is_sent_by_the_next_session_start(self):
+        endpoint = self.start_sink()
+        self.opt_in(endpoint)
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        sub = self.transcript.with_suffix("") / "subagents" / "agent-x.jsonl"
+        sub.parent.mkdir(parents=True)
+        sub.write_text(json.dumps(rec_skill("toolu_sub", "creai-create-pr")) + "\n")
+        # Claude Code was killed: no SessionEnd. The next session's SessionStart finds both files.
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual(sorted(e["skill"] for e in Sink.received[-1][1]["events"]),
+                         ["creai-create-pr", "creai-implement"])
+        self.assertEqual(self.mod.pending_count(), 0)
+
+    def test_session_start_leaves_transcripts_from_before_opt_in_to_backfill(self):
+        endpoint = self.start_sink()
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        old = time.time() - 3600
+        os.utime(self.transcript, (old, old))  # last written an hour before the dev opted in
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN,
+                                                   "opted_in_at": self.iso(old + 60)})
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual(Sink.received, [])
+        self.assertEqual(self.mod.read_cursors()["offsets"], {})
+
+    def test_session_start_does_not_reopen_transcripts_already_read(self):
+        endpoint = self.start_sink()
+        self.opt_in(endpoint)
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+        with mock.patch.object(self.mod, "scan_file", wraps=self.mod.scan_file) as scan:
+            self.run_hook({"hook_event_name": "SessionStart"})
+        scan.assert_not_called()
+        self.assertEqual(len(Sink.received), 1)  # nothing sent twice
+
+    @staticmethod
+    def iso(ts):
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
 
     def test_only_records_that_can_hold_an_event_are_parsed(self):
         big_tool_output = {"type": "user", "message": {"role": "user", "content": [

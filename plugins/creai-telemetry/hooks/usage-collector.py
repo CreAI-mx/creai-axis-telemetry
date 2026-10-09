@@ -239,6 +239,39 @@ def scan_file(path, index, start=0, deadline=None):
     return events, offset, "done"
 
 
+def transcript_files():
+    """Every transcript on this machine: main sessions and their subagents."""
+    projects = claude_dir() / "projects"
+    return sorted(projects.glob("*/*.jsonl")) + sorted(projects.glob("*/*/subagents/*.jsonl"))
+
+
+def opted_in_since(config):
+    """When this machine opted in, as a timestamp. Falls back to the config file's mtime."""
+    try:
+        return datetime.fromisoformat(config["opted_in_at"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return CONFIG_FILE.stat().st_mtime
+
+
+def unread_transcripts(since):
+    """Transcripts changed since `since` that hold bytes past their cursor.
+
+    SessionEnd doesn't fire when Claude Code is killed or crashes, so the next SessionStart finds
+    those sessions here. Files changed only before opt-in are left to `backfill`, which stays the
+    dev's choice. Fully read files cost one stat and are never opened.
+    """
+    offsets = read_cursors()["offsets"]
+    found = []
+    for path in transcript_files():
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if st.st_mtime >= since and st.st_size != offsets.get(str(path), 0):
+            found.append(path)
+    return found
+
+
 def session_files(transcript_path):
     """The main transcript plus its subagent transcripts (<session>/subagents/*.jsonl)."""
     main = Path(transcript_path)
@@ -532,13 +565,19 @@ def cmd_hook(_args):
             return 0
         deadline = time.monotonic() + HOOK_BUDGET_S
         payload = json.load(sys.stdin)
+        event = payload.get("hook_event_name")
         paths = []
-        if payload.get("hook_event_name") == "SessionEnd" and payload.get("transcript_path"):
+        if event == "SessionEnd" and payload.get("transcript_path"):
             paths = session_files(payload["transcript_path"])
         # Also resume files an earlier hook ran out of time on, or couldn't save because of the lock.
-        for key in [*read_cursors()["incomplete"], *marked_for_rescan()]:
-            if Path(key) not in paths:
-                paths.append(Path(key))
+        pending = [Path(key) for key in [*read_cursors()["incomplete"], *marked_for_rescan()]]
+        if event == "SessionStart":
+            pending += unread_transcripts(opted_in_since(config))
+        seen = set(paths)
+        for path in pending:
+            if path not in seen:
+                seen.add(path)
+                paths.append(path)
         if paths:
             # Leave room in the budget for at least one send.
             collect(paths, PluginIndex(), deadline - HTTP_TIMEOUT_S - 1)
@@ -598,8 +637,7 @@ def cmd_backfill(args):
     if not config:
         print("Not opted in; run `optin` first.", file=sys.stderr)
         return 1
-    files = sorted((claude_dir() / "projects").glob("*/*.jsonl"))
-    files += sorted((claude_dir() / "projects").glob("*/*/subagents/*.jsonl"))
+    files = transcript_files()
     if args.since:
         cutoff = datetime.fromisoformat(args.since).timestamp()
         files = [f for f in files if f.stat().st_mtime >= cutoff]
