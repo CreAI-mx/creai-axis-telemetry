@@ -245,10 +245,13 @@ def transcript_files():
     return sorted(projects.glob("*/*.jsonl")) + sorted(projects.glob("*/*/subagents/*.jsonl"))
 
 
-def opted_in_since():
-    """When this machine opted in: the config file's write time. Only `optin` writes that file, after
-    consent, and its mtime is sub-second, unlike `opted_in_at`, which is rounded down to the second
-    and so could let in a transcript written just before consent."""
+def opted_in_since(config):
+    """When the dev consented, as a sub-second timestamp. `opted_in_at` is rounded down to the second,
+    so it could let in a transcript written just before consent. Configs written before
+    `consent_since` existed fall back to the config file's write time."""
+    since = config.get("consent_since")
+    if isinstance(since, (int, float)) and not isinstance(since, bool):
+        return since
     return CONFIG_FILE.stat().st_mtime
 
 
@@ -573,7 +576,7 @@ def cmd_hook(_args):
         # Also resume files an earlier hook ran out of time on, or couldn't save because of the lock.
         pending = [Path(key) for key in [*read_cursors()["incomplete"], *marked_for_rescan()]]
         if event == "SessionStart":
-            pending += unread_transcripts(opted_in_since())
+            pending += unread_transcripts(opted_in_since(config))
         seen = set(paths)
         for path in pending:
             if path not in seen:
@@ -609,9 +612,15 @@ def cmd_optin(args):
     if len(token) < 32:
         print("That does not look like an ingest token (expected 32+ characters).", file=sys.stderr)
         return 2
-    write_json(CONFIG_FILE, {"endpoint": args.endpoint, "token": token,
-                             "opted_in_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
-               private=True)
+    # Re-running optin to change the token or endpoint keeps the original consent time, so SessionStart
+    # still catches up on sessions killed since then. optout deletes the file, and with it that time.
+    previous = load_config()
+    now = time.time()
+    consent_since = opted_in_since(previous) if previous else now
+    opted_in_at = ((previous or {}).get("opted_in_at")
+                   or datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"))
+    write_json(CONFIG_FILE, {"endpoint": args.endpoint, "token": token, "opted_in_at": opted_in_at,
+                             "consent_since": consent_since}, private=True)
     print(f"Opted in. Config written to {CONFIG_FILE} (mode 600).")
     return 0
 

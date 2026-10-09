@@ -464,6 +464,25 @@ class CollectorTest(unittest.TestCase):
         self.run_hook({"hook_event_name": "SessionStart"})
         self.assertEqual(Sink.received, [])
 
+    def test_rotating_the_token_keeps_the_consent_time(self):
+        endpoint = self.start_sink()
+
+        def optin():
+            with mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):
+                self.assertEqual(self.mod.main(["optin", "--endpoint", endpoint]), 0)
+            return self.mod.read_json(self.mod.CONFIG_FILE, {})
+
+        first = optin()
+        self.write_records(rec_skill("toolu_1", "creai-implement"))  # then Claude Code is killed
+        rotated = optin()  # the token was revoked; the dev enters a new one
+        self.assertEqual((rotated["consent_since"], rotated["opted_in_at"]),
+                         (first["consent_since"], first["opted_in_at"]))
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-implement"])
+
+        self.mod.main(["optout"])  # withdrawing consent forgets it; a new opt-in starts a new cutoff
+        self.assertGreater(optin()["consent_since"], first["consent_since"])
+
     def test_session_start_does_not_reopen_transcripts_already_read(self):
         endpoint = self.start_sink()
         self.opt_in(endpoint)

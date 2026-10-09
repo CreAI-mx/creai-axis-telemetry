@@ -63,8 +63,10 @@ sequenceDiagram
 **Sessions that end without `SessionEnd`.** Claude Code doesn't run `SessionEnd` when it's killed or
 crashes, or when the terminal is closed. So every `SessionStart` also lists the transcripts on the
 machine and collects those changed since opt-in whose size differs from their cursor. "Since
-opt-in" is the config file's write time, which is sub-second; `opted_in_at` is rounded to the
-second and could let in a transcript written just before consent. Fully read files
+opt-in" is `consent_since` in the config, a sub-second timestamp (`opted_in_at` is rounded to the
+second and could let in a transcript written just before consent). Re-running `optin` to rotate a
+revoked token keeps both, so sessions killed before the rotation are still collected; `optout`
+deletes them. Fully read files
 cost one `stat` each (about 26 ms for 5,000 files) and are never opened. Files last changed before
 opt-in are left alone: loading history stays the dev's choice through `backfill`. A session that is
 still running elsewhere is read up to its last complete line, and the rest is collected later.
