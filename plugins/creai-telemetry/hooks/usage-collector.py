@@ -378,12 +378,31 @@ def append_events(events):
         return locked
 
 
-def collect(paths, index, deadline=None):
-    """Scan `paths` from their cursors and queue new events. Returns how many were queued."""
-    start_offsets = read_cursors()["offsets"]
+def event_time(ts):
+    """An event's ISO timestamp ("…T10:05:00.000Z") as epoch seconds, or None if unreadable.
+    Python 3.9's fromisoformat doesn't accept the "Z"."""
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def collect(paths, index, deadline=None, since=None, from_start=False):
+    """Scan `paths` from their cursors and queue new events. Returns how many were queued.
+
+    `since` drops events stamped before it (or without a readable time). Hooks pass the consent time,
+    so a transcript that was already open at opt-in only sends what came after; older history goes
+    only through `backfill`, which passes `from_start` because a hook may have read past (and dropped)
+    those events already.
+    """
+    start_offsets = {} if from_start else read_cursors()["offsets"]
     queued, progress = [], {}  # progress: path -> (new offset or None if gone, finished)
     for path in paths:
         key = str(path)
+        if deadline is not None and time.monotonic() > deadline:
+            # Out of time: don't open another file. Keep its cursor and list it for the next hook.
+            progress[key] = (start_offsets.get(key, 0), False)
+            continue
         try:
             st = path.stat()
         except OSError:
@@ -397,6 +416,8 @@ def collect(paths, index, deadline=None):
             # The writer died mid-line; nothing more will come. Skip the cut-off line too, so the
             # cursor matches the file size and SessionStart stops reopening the file.
             status, offset = "done", st.st_size
+        if since is not None:
+            events = [ev for ev in events if (event_time(ev["ts"]) or 0) >= since]
         queued.extend(events)
         # Unfinished files (out of time, or a last line still being written) stay listed for later hooks.
         progress[key] = (offset, status == "done")
@@ -584,7 +605,7 @@ def cmd_hook(_args):
                 paths.append(path)
         if paths:
             # Leave room in the budget for at least one send.
-            collect(paths, PluginIndex(), deadline - HTTP_TIMEOUT_S - 1)
+            collect(paths, PluginIndex(), deadline - HTTP_TIMEOUT_S - 1, since=opted_in_since(config))
         flush(config, deadline)
     except Exception:  # noqa: BLE001 - see comment above
         pass
@@ -651,7 +672,7 @@ def cmd_backfill(args):
     if args.since:
         cutoff = datetime.fromisoformat(args.since).timestamp()
         files = [f for f in files if f.stat().st_mtime >= cutoff]
-    queued = collect(files, PluginIndex())
+    queued = collect(files, PluginIndex(), from_start=True)  # the server ignores events it already has
     result = flush(config)
     print(f"Scanned {len(files)} transcripts, queued {queued} events; "
           f"sent {result['sent']}, pending {result['pending']}.")
