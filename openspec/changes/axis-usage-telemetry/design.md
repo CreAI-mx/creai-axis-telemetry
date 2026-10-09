@@ -56,15 +56,33 @@ sequenceDiagram
     C-->>CC: exit 0 always
   end
   CC->>C: SessionStart (next session)
-  C->>F: retry whatever is still queued
+  C->>Q: collect transcripts changed since opt-in with unread bytes
+  C->>F: send them, and retry whatever is still queued
 ```
 
+**Sessions that end without `SessionEnd`.** Claude Code doesn't run `SessionEnd` when it's killed or
+crashes, or when the terminal is closed. So every `SessionStart` also lists the transcripts on the
+machine and collects those changed since opt-in whose size differs from their cursor. "Since
+opt-in" is `consent_since` in the config, a sub-second timestamp (`opted_in_at` is rounded to the
+second and could let in a transcript written just before consent). Re-running `optin` to rotate a
+revoked token keeps both, so sessions killed before the rotation are still collected; `optout`
+deletes them. Fully read files cost one `stat` each (about 26 ms for 5,000 files) and are never
+opened. A session that is still running elsewhere is read up to its last complete line, and the
+rest is collected later.
+
+**Nothing from before consent without `backfill`.** A transcript that was already open at opt-in,
+such as the session the dev opts in from, holds skill calls from before consent. Both hooks drop
+events stamped before `consent_since`. Only `backfill`, the dev's explicit choice, sends older
+history, and it rereads every file from the start, since a hook may already have read past (and
+dropped) those events. The server ignores the events it already has.
+
 **Time budget.** Claude Code kills the hook at 10 s, so the hook budgets 8 s. It scans until 2 s are
-used, leaving room for one 5 s send. A file it didn't finish goes on an `incomplete` list in the cursor
+used, leaving room for one 5 s send. Once that time is up it opens no further file. A file it didn't
+finish or didn't reach goes on an `incomplete` list in the cursor
 file, and the next hook (any session's, start or end) resumes it. It only starts a batch whose 5 s HTTP
 timeout still fits the budget; the rest stays queued. A last line still being written when the hook
 runs also keeps the file on the `incomplete` list, so a later hook collects it once it's complete. A
-line still cut off after a day is abandoned (its writer died). Only lines containing `"Skill"` or
+line still cut off after a day is abandoned (its writer died) and the cursor moves past it. Only lines containing `"Skill"` or
 `<command-name>` are parsed as JSON; tool output, which can run to megabytes per line, is skipped
 unparsed, and so is any line over 8 MB.
 

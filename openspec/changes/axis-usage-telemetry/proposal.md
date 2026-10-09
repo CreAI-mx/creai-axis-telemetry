@@ -51,7 +51,7 @@ Everything is new, in `creai-axis-telemetry`:
 | Where | What |
 |---|---|
 | `.claude-plugin/marketplace.json` | A one-plugin marketplace, so devs install with `claude plugin marketplace add CreAI-mx/creai-axis-telemetry`. |
-| `plugins/creai-telemetry/hooks/usage-collector.py` | Stdlib-only Python. It stays inert until opt-in. At `SessionEnd` it parses that session's transcript (and its subagents) from a byte cursor and queues one event per creai-axis skill, then sends the queue. At `SessionStart` it retries anything still queued. It always exits 0. |
+| `plugins/creai-telemetry/hooks/usage-collector.py` | Stdlib-only Python. It stays inert until opt-in. At `SessionEnd` it parses that session's transcript (and its subagents) from a byte cursor and queues one event per creai-axis skill, then sends the queue. At `SessionStart` it collects sessions changed since opt-in that still hold unread bytes (Claude Code killed or crashed, so `SessionEnd` never ran), then retries anything still queued. It always exits 0. |
 | `plugins/creai-telemetry/hooks/hooks.json` | `SessionStart` and `SessionEnd` blocks only. |
 | `plugins/creai-telemetry/skills/creai-usage/` | `/creai-telemetry:creai-usage`: opt in (with explicit consent and the token kept out of the chat), backfill, status, opt out. |
 | `tests/collector/`, `supabase/functions/ingest/handler.test.ts` | Collector unit tests: parsing, privacy (arguments, text and OS user name never captured), cursors, the hook's time budget, concurrent sessions, send and retry, opt-in file permissions. Ingest tests: auth, malformed bodies, validation. Run in CI on macOS and Linux, Python 3.9 and 3.12, and Deno. |

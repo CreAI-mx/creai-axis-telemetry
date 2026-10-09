@@ -239,6 +239,41 @@ def scan_file(path, index, start=0, deadline=None):
     return events, offset, "done"
 
 
+def transcript_files():
+    """Every transcript on this machine: main sessions and their subagents."""
+    projects = claude_dir() / "projects"
+    return sorted(projects.glob("*/*.jsonl")) + sorted(projects.glob("*/*/subagents/*.jsonl"))
+
+
+def opted_in_since(config):
+    """When the dev consented, as a sub-second timestamp. `opted_in_at` is rounded down to the second,
+    so it could let in a transcript written just before consent. Configs written before
+    `consent_since` existed fall back to the config file's write time."""
+    since = config.get("consent_since")
+    if isinstance(since, (int, float)) and not isinstance(since, bool):
+        return since
+    return CONFIG_FILE.stat().st_mtime
+
+
+def unread_transcripts(since):
+    """Transcripts changed since `since` that hold bytes past their cursor.
+
+    SessionEnd doesn't fire when Claude Code is killed or crashes, so the next SessionStart finds
+    those sessions here. Files changed only before opt-in are left to `backfill`, which stays the
+    dev's choice. Fully read files cost one stat and are never opened.
+    """
+    offsets = read_cursors()["offsets"]
+    found = []
+    for path in transcript_files():
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if st.st_mtime >= since and st.st_size != offsets.get(str(path), 0):
+            found.append(path)
+    return found
+
+
 def session_files(transcript_path):
     """The main transcript plus its subagent transcripts (<session>/subagents/*.jsonl)."""
     main = Path(transcript_path)
@@ -343,12 +378,31 @@ def append_events(events):
         return locked
 
 
-def collect(paths, index, deadline=None):
-    """Scan `paths` from their cursors and queue new events. Returns how many were queued."""
-    start_offsets = read_cursors()["offsets"]
+def event_time(ts):
+    """An event's ISO timestamp ("…T10:05:00.000Z") as epoch seconds, or None if unreadable.
+    Python 3.9's fromisoformat doesn't accept the "Z"."""
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def collect(paths, index, deadline=None, since=None, from_start=False):
+    """Scan `paths` from their cursors and queue new events. Returns how many were queued.
+
+    `since` drops events stamped before it (or without a readable time). Hooks pass the consent time,
+    so a transcript that was already open at opt-in only sends what came after; older history goes
+    only through `backfill`, which passes `from_start` because a hook may have read past (and dropped)
+    those events already.
+    """
+    start_offsets = {} if from_start else read_cursors()["offsets"]
     queued, progress = [], {}  # progress: path -> (new offset or None if gone, finished)
     for path in paths:
         key = str(path)
+        if deadline is not None and time.monotonic() > deadline:
+            # Out of time: don't open another file. Keep its cursor and list it for the next hook.
+            progress[key] = (start_offsets.get(key, 0), False)
+            continue
         try:
             st = path.stat()
         except OSError:
@@ -359,7 +413,11 @@ def collect(paths, index, deadline=None):
             start = 0
         events, offset, status = scan_file(path, index, start, deadline)
         if status == "partial" and time.time() - st.st_mtime > ABANDONED_PARTIAL_S:
-            status = "done"  # the writer died mid-line; nothing more will come
+            # The writer died mid-line; nothing more will come. Skip the cut-off line too, so the
+            # cursor matches the file size and SessionStart stops reopening the file.
+            status, offset = "done", st.st_size
+        if since is not None:
+            events = [ev for ev in events if (event_time(ev["ts"]) or 0) >= since]
         queued.extend(events)
         # Unfinished files (out of time, or a last line still being written) stay listed for later hooks.
         progress[key] = (offset, status == "done")
@@ -532,16 +590,22 @@ def cmd_hook(_args):
             return 0
         deadline = time.monotonic() + HOOK_BUDGET_S
         payload = json.load(sys.stdin)
+        event = payload.get("hook_event_name")
         paths = []
-        if payload.get("hook_event_name") == "SessionEnd" and payload.get("transcript_path"):
+        if event == "SessionEnd" and payload.get("transcript_path"):
             paths = session_files(payload["transcript_path"])
         # Also resume files an earlier hook ran out of time on, or couldn't save because of the lock.
-        for key in [*read_cursors()["incomplete"], *marked_for_rescan()]:
-            if Path(key) not in paths:
-                paths.append(Path(key))
+        pending = [Path(key) for key in [*read_cursors()["incomplete"], *marked_for_rescan()]]
+        if event == "SessionStart":
+            pending += unread_transcripts(opted_in_since(config))
+        seen = set(paths)
+        for path in pending:
+            if path not in seen:
+                seen.add(path)
+                paths.append(path)
         if paths:
             # Leave room in the budget for at least one send.
-            collect(paths, PluginIndex(), deadline - HTTP_TIMEOUT_S - 1)
+            collect(paths, PluginIndex(), deadline - HTTP_TIMEOUT_S - 1, since=opted_in_since(config))
         flush(config, deadline)
     except Exception:  # noqa: BLE001 - see comment above
         pass
@@ -569,9 +633,15 @@ def cmd_optin(args):
     if len(token) < 32:
         print("That does not look like an ingest token (expected 32+ characters).", file=sys.stderr)
         return 2
-    write_json(CONFIG_FILE, {"endpoint": args.endpoint, "token": token,
-                             "opted_in_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
-               private=True)
+    # Re-running optin to change the token or endpoint keeps the original consent time, so SessionStart
+    # still catches up on sessions killed since then. optout deletes the file, and with it that time.
+    previous = load_config()
+    now = time.time()
+    consent_since = opted_in_since(previous) if previous else now
+    opted_in_at = ((previous or {}).get("opted_in_at")
+                   or datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"))
+    write_json(CONFIG_FILE, {"endpoint": args.endpoint, "token": token, "opted_in_at": opted_in_at,
+                             "consent_since": consent_since}, private=True)
     print(f"Opted in. Config written to {CONFIG_FILE} (mode 600).")
     return 0
 
@@ -598,12 +668,11 @@ def cmd_backfill(args):
     if not config:
         print("Not opted in; run `optin` first.", file=sys.stderr)
         return 1
-    files = sorted((claude_dir() / "projects").glob("*/*.jsonl"))
-    files += sorted((claude_dir() / "projects").glob("*/*/subagents/*.jsonl"))
+    files = transcript_files()
     if args.since:
         cutoff = datetime.fromisoformat(args.since).timestamp()
         files = [f for f in files if f.stat().st_mtime >= cutoff]
-    queued = collect(files, PluginIndex())
+    queued = collect(files, PluginIndex(), from_start=True)  # the server ignores events it already has
     result = flush(config)
     print(f"Scanned {len(files)} transcripts, queued {queued} events; "
           f"sent {result['sent']}, pending {result['pending']}.")

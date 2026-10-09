@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -26,14 +27,21 @@ def load_collector(state_dir, claude_dir):
     return module
 
 
-def rec_user(uuid, text, branch="feature/DAIL-1-x"):
-    return {"type": "user", "uuid": uuid, "timestamp": "2026-10-07T10:00:00.000Z", "sessionId": "s1",
+def stamp(offset_s=60):
+    """A transcript timestamp. Hooks drop events from before consent, so records default to a minute
+    after now, which is after any opt-in in these tests."""
+    ts = datetime.fromtimestamp(time.time() + offset_s, timezone.utc)
+    return ts.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def rec_user(uuid, text, branch="feature/DAIL-1-x", ts=None):
+    return {"type": "user", "uuid": uuid, "timestamp": ts or stamp(), "sessionId": "s1",
             "cwd": "/home/dev/agrizar", "gitBranch": branch, "version": "2.1.290",
             "message": {"role": "user", "content": text}}
 
 
-def rec_skill(tool_id, skill):
-    return {"type": "assistant", "uuid": "a-" + tool_id, "timestamp": "2026-10-07T10:05:00.000Z",
+def rec_skill(tool_id, skill, ts=None):
+    return {"type": "assistant", "uuid": "a-" + tool_id, "timestamp": ts or stamp(),
             "sessionId": "s1", "cwd": "/home/dev/agrizar", "gitBranch": "feature/DAIL-1-x",
             "version": "2.1.290",
             "message": {"role": "assistant", "content": [
@@ -357,15 +365,17 @@ class CollectorTest(unittest.TestCase):
         interleaved = []
 
         def scan_then_let_another_hook_finish(path, index, start=0, deadline=None):
-            result = real_scan(path, index, start, deadline)
+            if path != self.transcript:
+                return real_scan(path, index, start, deadline)
+            # This hook runs out of time on its own transcript, so it must stay listed as incomplete.
+            result = real_scan(path, index, start, time.monotonic() - 1)
             if not interleaved:  # another session's hook saves its progress while we are scanning
                 interleaved.append(True)
                 self.mod.collect([other], index)
             return result
 
         with mock.patch.object(self.mod, "scan_file", side_effect=scan_then_let_another_hook_finish):
-            # This hook runs out of time on its own transcript, so it must stay listed as incomplete.
-            self.mod.collect([self.transcript], self.mod.PluginIndex(), time.monotonic() - 1)
+            self.mod.collect([self.transcript], self.mod.PluginIndex())
         cursors = self.mod.read_cursors()
         self.assertIn(str(other), cursors["offsets"])  # the other hook's progress survived
         self.assertEqual(cursors["incomplete"], [str(self.transcript)])  # and so did ours
@@ -391,6 +401,11 @@ class CollectorTest(unittest.TestCase):
         os.utime(self.transcript, (old, old))
         self.assertEqual(self.mod.collect([self.transcript], self.mod.PluginIndex()), 1)
         self.assertEqual(self.mod.read_cursors()["incomplete"], [])
+        # The cursor skips the cut-off line, so later SessionStarts don't reopen the file.
+        self.assertEqual(self.mod.read_cursors()["offsets"][str(self.transcript)], self.transcript.stat().st_size)
+        with mock.patch.object(self.mod, "scan_file", wraps=self.mod.scan_file) as scan:
+            self.run_hook({"hook_event_name": "SessionStart"})
+        scan.assert_not_called()
 
     def test_opting_out_mid_send_leaves_nothing_queued(self):
         self.opt_in()
@@ -419,6 +434,102 @@ class CollectorTest(unittest.TestCase):
         self.run_hook({"hook_event_name": "SessionStart"})
         self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-implement"])
         self.assertEqual(self.mod.marked_for_rescan(), [])
+
+    # --- sessions that end without SessionEnd ---
+
+    def test_a_killed_session_is_sent_by_the_next_session_start(self):
+        endpoint = self.start_sink()
+        self.opt_in(endpoint)
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        sub = self.transcript.with_suffix("") / "subagents" / "agent-x.jsonl"
+        sub.parent.mkdir(parents=True)
+        sub.write_text(json.dumps(rec_skill("toolu_sub", "creai-create-pr")) + "\n")
+        # Claude Code was killed: no SessionEnd. The next session's SessionStart finds both files.
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual(sorted(e["skill"] for e in Sink.received[-1][1]["events"]),
+                         ["creai-create-pr", "creai-implement"])
+        self.assertEqual(self.mod.pending_count(), 0)
+
+    def test_session_start_leaves_transcripts_from_before_opt_in_to_backfill(self):
+        endpoint = self.start_sink()
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        old = time.time() - 3600
+        os.utime(self.transcript, (old, old))  # last written an hour before the dev opted in
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN,
+                                                   "opted_in_at": self.iso(old + 60)})
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual(Sink.received, [])
+        self.assertEqual(self.mod.read_cursors()["offsets"], {})
+
+    def test_session_start_skips_a_transcript_written_in_the_second_before_opt_in(self):
+        endpoint = self.start_sink()
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        # opted_in_at is rounded down to the second, so it can predate the transcript. The config's
+        # write time can't: it's sub-second and later than anything written before consent.
+        self.mod.write_json(self.mod.CONFIG_FILE, {"endpoint": endpoint, "token": TOKEN,
+                                                   "opted_in_at": self.iso(int(time.time()) - 1)})
+        before = self.mod.CONFIG_FILE.stat().st_mtime - 0.001
+        os.utime(self.transcript, (before, before))
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual(Sink.received, [])
+
+    def test_rotating_the_token_keeps_the_consent_time(self):
+        endpoint = self.start_sink()
+
+        def optin():
+            with mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):
+                self.assertEqual(self.mod.main(["optin", "--endpoint", endpoint]), 0)
+            return self.mod.read_json(self.mod.CONFIG_FILE, {})
+
+        first = optin()
+        self.write_records(rec_skill("toolu_1", "creai-implement"))  # then Claude Code is killed
+        rotated = optin()  # the token was revoked; the dev enters a new one
+        self.assertEqual((rotated["consent_since"], rotated["opted_in_at"]),
+                         (first["consent_since"], first["opted_in_at"]))
+        self.run_hook({"hook_event_name": "SessionStart"})
+        self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-implement"])
+
+        self.mod.main(["optout"])  # withdrawing consent forgets it; a new opt-in starts a new cutoff
+        self.assertGreater(optin()["consent_since"], first["consent_since"])
+
+    def test_hooks_send_only_what_came_after_consent_and_backfill_sends_the_rest(self):
+        endpoint = self.start_sink()
+        before = stamp(-3600)  # this session was already open, an hour before opt-in
+        self.write_records(rec_user("u1", "<command-name>/creai-common:creai-implement</command-name>", ts=before))
+        with mock.patch.object(sys, "stdin", io.StringIO(TOKEN + "\n")):
+            self.mod.main(["optin", "--endpoint", endpoint])
+        self.write_records(rec_skill("toolu_1", "creai-create-pr"))
+        self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+        self.assertEqual([e["skill"] for e in Sink.received[-1][1]["events"]], ["creai-create-pr"])
+
+        # The dev then chooses to load their history: backfill rereads from the start.
+        self.mod.main(["backfill"])
+        self.assertEqual(sorted(e["skill"] for e in Sink.received[-1][1]["events"]),
+                         ["creai-create-pr", "creai-implement"])
+
+    def test_after_the_deadline_no_further_file_is_opened(self):
+        self.opt_in()
+        other = self.transcript.with_name("s2.jsonl")
+        other.write_text(json.dumps(rec_skill("toolu_2", "creai-create-pr")) + "\n")
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        with mock.patch.object(self.mod, "scan_file", wraps=self.mod.scan_file) as scan:
+            self.mod.collect([self.transcript, other], self.mod.PluginIndex(), time.monotonic() - 1)
+        scan.assert_not_called()
+        self.assertEqual(self.mod.read_cursors()["incomplete"], sorted([str(self.transcript), str(other)]))
+
+    def test_session_start_does_not_reopen_transcripts_already_read(self):
+        endpoint = self.start_sink()
+        self.opt_in(endpoint)
+        self.write_records(rec_skill("toolu_1", "creai-implement"))
+        self.run_hook({"hook_event_name": "SessionEnd", "transcript_path": str(self.transcript)})
+        with mock.patch.object(self.mod, "scan_file", wraps=self.mod.scan_file) as scan:
+            self.run_hook({"hook_event_name": "SessionStart"})
+        scan.assert_not_called()
+        self.assertEqual(len(Sink.received), 1)  # nothing sent twice
+
+    @staticmethod
+    def iso(ts):
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
 
     def test_only_records_that_can_hold_an_event_are_parsed(self):
         big_tool_output = {"type": "user", "message": {"role": "user", "content": [
